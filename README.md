@@ -3,13 +3,6 @@ ClickSaver for Anarchy Online
 
 This is an *unofficial* fork of ClickSaver (if you want to call the current situation as *official*) based on the latest available sources from AOU [1] and Darkbane [2].
 
-
-## Compilation
-
-VS2022 with the toolchain set to v141_xp to get CS to still run under WinXP additonal to all newer Windows versions.
-The solution should still work in all VS versions down to VS2010 if the toolset is changed to the latest version supported by that version.
-
-
 ## Quick history tour
 
 From what I could gather these were the official places/developers you could get CS from in the past. While lots of others contributed fixes and ideas throughout the lifetime. Correct me if I'm wrong.
