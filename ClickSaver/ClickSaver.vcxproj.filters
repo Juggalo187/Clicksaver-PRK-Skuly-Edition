@@ -1,0 +1,55 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source">
+      <UniqueIdentifier>{9cb12ff4-9ec7-46bd-848c-05b122f897ff}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Resource">
+      <UniqueIdentifier>{c6601cea-58e0-4e7d-bde1-134b8394b4e3}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="clicksaver.c">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="guidef.c">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="hook.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="mission.c">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="sqlite3.c">
+      <Filter>Source</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="clicksaver.h">
+      <Filter>Source</Filter>
+    </ClInclude>
+    <ClInclude Include="mission.h">
+      <Filter>Source</Filter>
+    </ClInclude>
+    <ClInclude Include="resource.h">
+      <Filter>Resource</Filter>
+    </ClInclude>
+    <ClInclude Include="Platform.h">
+      <Filter>Source</Filter>
+    </ClInclude>
+    <ClInclude Include="sqlite3.h">
+      <Filter>Source</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="ClickSaver.rc">
+      <Filter>Resource</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="cs.ico">
+      <Filter>Resource</Filter>
+    </None>
+  </ItemGroup>
+</Project>
