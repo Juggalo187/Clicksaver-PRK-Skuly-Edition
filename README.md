@@ -35,3 +35,9 @@ From what I could gather these were the official places/developers you could get
 [1] [CS v2.3.5 source download](http://www.ao-universe.com/index.php?id=29&mid=1&site=AO-Universe%2FMultimedia%2FDownloads%2FTools%2F&fid=14&action=download)
 
 [2] [CS v2.4.0 source download](http://www.lastmanut.pwp.blueyonder.co.uk/CS240_Source.zip)
+<div style="display: flex; gap: 10px; flex-wrap: wrap;">
+<img width="225" height="295" alt="mass-add-Clicksaver" src="https://github.com/user-attachments/assets/d7414638-95b5-450f-b024-e2599d5ea268" />
+<img width="225" height="295" alt="Items-Clicksaver" src="https://github.com/user-attachments/assets/f36f3ade-d20d-4cf9-ac73-7e6d3aa47da9" />
+<img width="225" height="295" alt="edit-Clicksaver" src="https://github.com/user-attachments/assets/d600c0f9-9211-4e83-be6e-624f225053a9" />
+<img width="283" height="180" alt="Buyingagent" src="https://github.com/user-attachments/assets/718686fa-3682-4591-88c4-93866aef3d42" />
+</div>
