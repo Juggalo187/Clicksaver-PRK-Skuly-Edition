@@ -92,6 +92,13 @@ long FindStr( PUU8* a_xBuf, unsigned long lBufLen, PUU8* a_xFind, unsigned long 
 /***/
 
 
+static const char *container_prefixes[] = {
+    "blister pack with",
+    "symbio-graft:",
+    "charged nano finger",
+    NULL
+};
+
 PULID RegisterMissionClass()
 {
     PULID SuperClass;
@@ -103,7 +110,6 @@ PULID RegisterMissionClass()
 
     return puRegisterClass( "CSMission", MissionClassHandler, sizeof( MissionClassData ), SuperClass );
 }
-
 
 static PUU32 ColDefSingle[] =
 {
@@ -949,6 +955,28 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
                 int limit = 0;
                 int force = ParseItemDisplayString((char*)pString, cleanName, sizeof(cleanName),
                                                    &limit, excludeWords, sizeof(excludeWords));
+												   
+				int isContainerReward = 0;
+					for (int i = 0; container_prefixes[i] != NULL; i++) {
+						if (strstr((char*)TmpItemName, container_prefixes[i])) {
+							isContainerReward = 1;
+							break;
+						}
+					}
+					if (isContainerReward) {
+						int watchHasPrefix = 0;
+						for (int i = 0; container_prefixes[i] != NULL; i++) {
+							if (strstr(cleanName, container_prefixes[i])) {
+								watchHasPrefix = 1;
+								break;
+							}
+						}
+						if (!watchHasPrefix) {
+							// Skip this watch item entirely – move to next record
+							Record = puDoMethod(_List, PUM_TABLE_GETNEXTRECORD, Record, 0);
+							continue;
+						}
+					}
 
                 // Build search string for ItemMatch: "cleanName -exclude1 -exclude2"
                 char searchStr[512];
