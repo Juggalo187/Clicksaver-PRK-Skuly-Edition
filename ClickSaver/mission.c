@@ -1166,10 +1166,8 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
                 char cleanName[256];
                 char excludeWords[256];
                 int limit = 0;
-                int disabled = 0, force = 0;
-				ParseDisplayString((char*)pString, cleanName, sizeof(cleanName),
-					&disabled, &force, &limit,
-					excludeWords, sizeof(excludeWords));
+                int force = ParseItemDisplayString((char*)pString, cleanName, sizeof(cleanName),
+                                                   &limit, excludeWords, sizeof(excludeWords));
 												   
 				int isContainerReward = 0;
 					for (int i = 0; container_prefixes[i] != NULL; i++) {
@@ -1209,11 +1207,22 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
                 if( ItemMatch( TmpItemName, (PUU8*)searchStr ) ) {
                     // Handle quantity limit
                     if( limit > 0 ) {
-						// Ensure counter exists
-						if( !FindItemCounter( cleanName ) )
-							AddItemCounter( cleanName, limit );
-						// Do NOT skip based on accepted count – matching always works
-					}
+                        ItemCounter *ic = FindItemCounter( cleanName );
+                        if( !ic ) {
+                            AddItemCounter( cleanName, limit );
+                            ic = FindItemCounter( cleanName );
+                        }
+                        if( ic ) {
+                            if( g_bUpdatingCounters ) {
+                                if (ic->accepted < ic->limit) {
+                                    ic->accepted++;
+                                }
+                            } else if( ic->accepted >= ic->limit ) {
+                                Record = puDoMethod( _List, PUM_TABLE_GETNEXTRECORD, Record, 0 );
+                                continue;
+                            }
+                        }
+                    }
                     
                     // Force-accept flag
                     if( force ) {
@@ -1225,20 +1234,6 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
                         puSetAttribute( _TextEntry, PUA_TEXTENTRY_HILIGHT,
                             puGetAttribute( puGetObjectFromCollection( g_pCol, CS_HIGHLIGHTITEM_CB ), PUA_CHECKBOX_CHECKED ) );
                     }
-					
-					// Increment counter if we are updating counters after mission acceptance
-					if (g_bUpdatingCounters) {
-						// cleanName is already extracted above (it holds the raw item name)
-						ItemCounter *counter = FindItemCounter(cleanName);
-						if (counter) {
-							counter->accepted++;
-							// Optional: update status label or log
-							char tmp[256];
-							sprintf(tmp, "Counter: %s now %d/%d", cleanName, counter->accepted, counter->limit);
-							puSetAttribute(puGetObjectFromCollection(g_pCol, CS_BA_STATUS), PUA_TEXT_STRING, (PUU32)tmp);
-						}
-					}
-					
                     return TRUE;
                 }
             } else { // location matching

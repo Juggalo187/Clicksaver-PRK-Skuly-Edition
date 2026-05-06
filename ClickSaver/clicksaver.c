@@ -75,6 +75,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "clicksaver.h"
 #include "resource.h"
 
+//#include "BerkeleyDB/db.h"
 #include "sqlite3.h"
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "comctl32.lib")
@@ -85,53 +86,31 @@ sqlite3_stmt* g_stmtItem = NULL;
 sqlite3_stmt* g_stmtIcon = NULL;
 sqlite3_stmt* g_stmtPF = NULL;
 
-// ========== FORWARD DECLARATIONS OF FUNCTIONS DEFINED AFTER main() ==========
+// Forward declarations for item name cache
 void BuildItemNameCache(const char *filename);
 int LoadItemNameCache(const char *cacheFilePath);
 void FreeItemNameCache(void);
+
 void CleanUp();
-void ImportSettings(char* filename);
-void ExportSettings(char* filename);
-void DisplayErrorMessage(PUU8* _pMessage, PUU32 _bAsynchronous);
-void GetFolder(HWND hWndOwner, char *strTitle, char *strPath);
-BOOL GetFile(HWND hWndOwner, BOOL saving, char *buffer, int buffersize);
-int BuyingAgent(int delay);
+void ImportSettings( char* filename );
+void ExportSettings( char* filename );
+
+void DisplayErrorMessage( PUU8* _pMessage, PUU32 _bAsynchronous );
+
+void GetFolder( HWND hWndOwner, char *strTitle, char *strPath );
+BOOL GetFile( HWND hWndOwner, BOOL saving, char *buffer, int buffersize );
+
+int BuyingAgent( int delay );
 void EndBuyingAgent();
-void UpdateAcceptedCountersForMission(int mishIndex);
-void _setSliders(int easy_hard, int good_bad, int order_chaos, int open_hidden, int phys_myst, int headon_stealth, int money_xp);
-
-// Forward declarations for item string helpers (defined after main)
-void BuildItemString(char *dest, size_t destSize, const char *itemName, int disabled, int forceAccept, int quantityLimit, const char *excludeWords);
-void FormatItemForDisplay(const char *raw, char *out, size_t outSize);
-//int ParseDisplayString(const char *display, char *itemName, size_t itemNameSize, int *disabled, int *forceAccept, int *quantityLimit, char *excludeWords, size_t excludeSize);
-void MakeTableEntry(char *dest, size_t destSize, const char *raw);
-
-// Forward declarations for item list operations (defined after main)
-static void MoveCurrentActiveToDisabled(void);
-static void MoveCurrentDisabledToActive(void);
-static void RemoveDuplicateItems(void);
-static int ItemExistsInActiveList(const char *displayString);
-static void ImportItemsFromFile(const char *filename, int replaceMode);
-static void ExportItemsOnly(const char *filename);
-
-typedef struct ItemCounter ItemCounter;
-
-// Forward declarations for item counter and watchlist functions
-int HasActiveWatchlistItems(void);
-void ClearItemCounters(void);
-ItemCounter* FindItemCounter(const char *name);
-void AddItemCounter(const char *name, int limit);
-
-// Forward declaration for the edit dialog
-typedef struct ItemEditData ItemEditData;   // opaque forward declaration
-int ShowItemEditDialog(HWND hParent, ItemEditData *pData, int bIsAddMode);
-// ============================================================================
+void UpdateAcceptedCountersForMission( int mishIndex );
 
 extern PUU8 g_bForceUIRefresh;
 extern PUU32 g_GUIDef[];
 pusObjectCollection* g_pCol;
 PULID g_ItemWatchList, g_LocWatchList, g_MainWin;
 PULID g_DisabledItemWatchList;
+
+void _setSliders( int easy_hard, int good_bad, int order_chaos, int open_hidden, int phys_myst, int headon_stealth, int money_xp );
 
 PUU32 g_BuyingAgentCount = 0;
 PUU32 g_BuyingAgentDelay = 5010;
@@ -149,31 +128,68 @@ PUU8 g_bPaused = 0;
 int g_BAWindowX = 300;
 int g_BAWindowY = 100;
 
-HWND g_hHiddenTabsWnd = NULL;
+char g_CurrentPacket[ 65536 ];
 
-char g_CurrentPacket[65536];
-
-char g_AODir[MAX_PATH] = {0};
-char g_CSDir[MAX_PATH] = {0};
+char g_AODir[ MAX_PATH ] = { 0 };
+char g_CSDir[ MAX_PATH ] = { 0 };
 
 HANDLE g_Mutex = INVALID_HANDLE_VALUE;
 HANDLE g_Thread = INVALID_HANDLE_VALUE;
 HANDLE g_hThreadExitEvent = NULL;
-HANDLE g_hAbortEvent = NULL;
-DWORD WINAPI HookManagerThread(void *pParam);
+HANDLE g_hAbortEvent = NULL;      // kept for compatibility, not used in timer version
+DWORD WINAPI HookManagerThread( void *pParam );
 
-typedef enum ImportSettingsMode
+//DB* g_pDB = NULL;
+
+// Helper: Show a modal message box that appears on top of the topmost main window
+static int ShowModalMessage(HWND hParent, const char* text, const char* caption, UINT type)
 {
-    ISM_CONFIG,
-    ISM_LOCWATCH,
-    ISM_ITEMWATCH,
-    ISM_DISABLED_ITEMWATCH,
-    ISM_SLIDERS,
-    ISM_DONE,
-} ImportSettingsMode;
+    // If no parent given, use the main window
+    if (!hParent && g_MainWin)
+        hParent = (HWND)puGetAttribute(g_MainWin, PUA_WINDOW_HANDLE);
+    
+    BOOL wasTopmost = FALSE;
+    if (hParent) {
+        LONG exStyle = GetWindowLong(hParent, GWL_EXSTYLE);
+        if (exStyle & WS_EX_TOPMOST) {
+            wasTopmost = TRUE;
+            SetWindowPos(hParent, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        }
+    }
+    
+    int result = MessageBox(hParent, text, caption, type | MB_SYSTEMMODAL);
+    
+    if (wasTopmost && hParent) {
+        SetWindowPos(hParent, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+    }
+    return result;
+}
 
-// ========== STRUCTURE FOR ITEM EDIT DIALOG (must be defined before use) ==========
-typedef struct ItemEditData {
+// Forward declarations for item string helpers
+void BuildItemString(char *dest, size_t destSize,
+                     const char *itemName,
+                     int disabled,
+                     int forceAccept,
+                     int quantityLimit,
+                     const char *excludeWords);
+
+void ParseItemString(const char *src,
+                     char *itemName, int itemNameSize,
+                     int *disabled,
+                     int *forceAccept,
+                     int *quantityLimit,
+                     char *excludeWords, int excludeSize);
+
+void FormatItemForDisplay(const char *raw, char *out, size_t outSize);
+void MakeTableEntry(char *dest, size_t destSize, const char *raw);
+
+// ========== TIMER BASED BUYING AGENT ==========
+#define TIMER_BUYINGAGENT 1
+static UINT_PTR g_TimerID = 0;
+static int g_PendingAttemptNumber = 0;
+
+// Data exchange for the native dialog
+typedef struct {
     char itemName[256];
     int  limit;
     int  disabled;
@@ -182,7 +198,476 @@ typedef struct ItemEditData {
     int  isAdd;
 } ItemEditData;
 
-// Parse raw item string format: [ # ][ ~ ]ItemName[ ;limit][ ^exclude1 ^exclude2 ...]
+// Structure to pass data to the match list dialog
+typedef struct {
+    const char **matches;
+    int count;
+    char selected[256];
+    char originalSearch[256];
+    char excludeWords[256];
+} MatchListData;
+
+static INT_PTR CALLBACK MatchListDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    MatchListData *pData = (MatchListData*)GetWindowLongPtr(hDlg, DWLP_USER);
+
+    switch (msg)
+    {
+    case WM_INITDIALOG:
+    {
+        pData = (MatchListData*)lParam;
+        SetWindowLongPtr(hDlg, DWLP_USER, (LONG_PTR)pData);
+
+        HWND hList = GetDlgItem(hDlg, IDC_MATCH_LIST);
+        for (int i = 0; i < pData->count; i++) {
+            SendMessageA(hList, LB_ADDSTRING, 0, (LPARAM)pData->matches[i]);
+        }
+
+        // Build hint text
+        char hint[512];
+        if (pData->excludeWords[0] != '\0') {
+            sprintf(hint, "Hint: You can Double click an item in the lsit to select it.\n\nHint: Using the original search term \"%s\" with exclusions (%s) will match %d item(s).",
+                    pData->originalSearch, pData->excludeWords, pData->count);
+        } else {
+            sprintf(hint, "Hint: You can Double click an item in the lsit to select it.\n\nHint: Using the original search term \"%s\" will match %d item(s).",
+                    pData->originalSearch, pData->count);
+        }
+        SetDlgItemTextA(hDlg, IDC_MATCH_HINT, hint);
+
+        SetFocus(GetDlgItem(hDlg, IDC_MATCH_EDIT));
+        return FALSE;
+    }
+
+    case WM_COMMAND:
+    {
+        if (LOWORD(wParam) == IDC_USE_ORIGINAL) {
+            pData->selected[0] = '\0';
+            EndDialog(hDlg, IDC_USE_ORIGINAL);
+            return TRUE;
+        }
+
+        if (LOWORD(wParam) == IDC_USE_TYPED) {
+            char typed[256];
+            GetDlgItemTextA(hDlg, IDC_MATCH_EDIT, typed, sizeof(typed));
+            if (strlen(typed) == 0) {
+                MessageBox(hDlg, "Please enter a name or click Cancel.", "Empty Name", MB_OK | MB_ICONWARNING);
+                return TRUE;
+            }
+
+            // Check how many items this typed name would match (using same exclude words)
+            int newMatchCount = 0;
+            const char **newMatches = NULL;
+            GetFilteredMatchingItems(typed, pData->excludeWords, &newMatches, &newMatchCount);
+            free((void*)newMatches);
+
+            char msg[512];
+            sprintf(msg, "Your typed name \"%s\" would match %d item(s).\n\nUse this name?", typed, newMatchCount);
+            if (MessageBox(hDlg, msg, "Confirm Typed Name", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                strcpy(pData->selected, typed);
+                EndDialog(hDlg, IDOK);
+            }
+            return TRUE;
+        }
+
+        if (LOWORD(wParam) == IDCANCEL) {
+            EndDialog(hDlg, IDCANCEL);
+            return TRUE;
+        }
+
+        if (LOWORD(wParam) == IDC_MATCH_LIST && HIWORD(wParam) == LBN_DBLCLK) {
+            HWND hList = GetDlgItem(hDlg, IDC_MATCH_LIST);
+            int sel = SendMessage(hList, LB_GETCURSEL, 0, 0);
+            if (sel != LB_ERR) {
+                SendMessageA(hList, LB_GETTEXT, sel, (LPARAM)pData->selected);
+                EndDialog(hDlg, IDOK);
+            }
+            return TRUE;
+        }
+        break;
+    }
+    }
+    return FALSE;
+}
+
+// Forward declarations
+INT_PTR CALLBACK ItemEditDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam);
+int ShowItemEditDialog(HWND hParent, ItemEditData *pData, int bIsAddMode);
+
+// Dialog procedure for the native edit/add dialog
+INT_PTR CALLBACK ItemEditDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    ItemEditData *pData = (ItemEditData*)GetWindowLongPtr(hDlg, DWLP_USER);
+    static HBRUSH hBrush = NULL;
+
+    switch (msg)
+    {
+    case WM_INITDIALOG:
+    {
+        pData = (ItemEditData*)lParam;
+        SetWindowLongPtr(hDlg, DWLP_USER, (LONG_PTR)pData);
+
+        // Set the dialog title
+        if (pData->isAdd)
+            SetWindowTextA(hDlg, "Add Item");
+        else
+            SetWindowTextA(hDlg, "Edit Item");
+
+        SetDlgItemTextA(hDlg, IDC_ITEM_NAME, pData->itemName);
+        SetDlgItemInt(hDlg, IDC_LIMIT, pData->limit, FALSE);
+        CheckDlgButton(hDlg, IDC_FORCE, pData->force ? BST_CHECKED : BST_UNCHECKED);
+        SetDlgItemTextA(hDlg, IDC_EXCLUDE, pData->exclude);
+
+        hBrush = CreateSolidBrush(RGB(240, 240, 240));
+        return TRUE;
+    }
+
+    case WM_CTLCOLORDLG:
+    case WM_CTLCOLORSTATIC:
+        if (hBrush)
+        {
+            SetBkMode((HDC)wParam, TRANSPARENT);
+            SetTextColor((HDC)wParam, RGB(0, 0, 0));
+            return (INT_PTR)hBrush;
+        }
+        break;
+
+    case WM_DESTROY:
+			if (hBrush) DeleteObject(hBrush);
+		break;
+
+    case WM_COMMAND:
+    {
+        WORD wID = LOWORD(wParam);
+        WORD wNotify = HIWORD(wParam);
+        HWND hCtrl = (HWND)lParam;
+
+        switch (wID)
+        {
+        case IDOK:
+			{
+				char enteredName[256];
+				GetDlgItemTextA(hDlg, IDC_ITEM_NAME, enteredName, sizeof(enteredName));
+			
+				// Trim leading/trailing spaces
+				char *start = enteredName;
+				while (*start == ' ') start++;
+				char *end = start + strlen(start) - 1;
+				while (end > start && *end == ' ') end--;
+				*(end + 1) = '\0';
+			
+				if (strlen(start) == 0) {
+					MessageBox(hDlg, "Item name cannot be empty.", "Validation", MB_OK | MB_ICONWARNING);
+					return TRUE;
+				}
+			
+				// Get exclude words from the dialog
+				char excludeTemp[256];
+				GetDlgItemTextA(hDlg, IDC_EXCLUDE, excludeTemp, sizeof(excludeTemp));
+			
+				// Get filtered list of matching items (respects exclusions)
+				int matchCount = 0;
+				const char **matches = NULL;
+				GetFilteredMatchingItems(start, excludeTemp, &matches, &matchCount);
+			
+				if (matchCount > 0) {
+					char msg[256];
+					sprintf(msg, "That would match %d item(s).\n\nBefore we add/update it, would you like to see a list of those possible matches?", matchCount);
+					int answer = MessageBox(hDlg, msg, "Multiple Matches", MB_YESNO | MB_ICONQUESTION);
+			
+					if (answer == IDYES) {
+						MatchListData data;
+						data.matches = matches;
+						data.count = matchCount;
+						data.selected[0] = '\0';
+						strcpy(data.originalSearch, start);
+						strcpy(data.excludeWords, excludeTemp);
+			
+						INT_PTR result = DialogBoxParam(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_MATCH_LIST),
+														hDlg, MatchListDlgProc, (LPARAM)&data);
+						if (result == IDOK && data.selected[0] != '\0') {
+							// User double‑clicked an item – replace the name
+							strcpy(start, data.selected);
+							SetDlgItemTextA(hDlg, IDC_ITEM_NAME, start);
+						} else if (result == IDC_USE_ORIGINAL) {
+							// User wants to keep the original name
+						} else {
+							// User cancelled
+							free((void*)matches);
+							return TRUE;
+						}
+					}
+					free((void*)matches);
+				} else {
+					// No matches – existing warning
+					char msg[512];
+					sprintf(msg, "Item \"%s\" would not match any known item.\n\nAdd it anyway?", start);
+					if (MessageBox(hDlg, msg, "Unknown Item", MB_YESNO | MB_ICONQUESTION) != IDYES)
+						return TRUE;
+				}
+			
+				// Copy trimmed name back
+				strcpy(pData->itemName, start);
+			
+				// Read other fields
+				pData->limit = GetDlgItemInt(hDlg, IDC_LIMIT, NULL, FALSE);
+				pData->force = (IsDlgButtonChecked(hDlg, IDC_FORCE) == BST_CHECKED);
+				GetDlgItemTextA(hDlg, IDC_EXCLUDE, pData->exclude, sizeof(pData->exclude));
+			
+				EndDialog(hDlg, IDOK);
+				return TRUE;
+			}
+
+        case IDCANCEL:
+            EndDialog(hDlg, IDCANCEL);
+            return TRUE;
+        }
+        break;
+    }
+    }
+    return FALSE;
+}
+
+static INT_PTR CALLBACK MassAddDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg)
+    {
+    case WM_INITDIALOG:
+        SetFocus(GetDlgItem(hDlg, IDC_MASS_EDIT));
+        return FALSE;   // let system set focus
+
+    case WM_COMMAND:
+        switch (LOWORD(wParam))
+        {
+			
+        case IDOK:
+			{
+				char text[65536];
+				GetDlgItemTextA(hDlg, IDC_MASS_EDIT, text, sizeof(text));
+			
+				char *p = text;
+                char line[1024] = { 0 };
+				int lineIdx;
+			
+				while (*p)
+				{
+					// Extract a line
+					lineIdx = 0;
+					while (*p && *p != '\r' && *p != '\n')
+					{
+						if (lineIdx < (int)sizeof(line)-1)
+							line[lineIdx++] = *p;
+						p++;
+					}
+					line[lineIdx] = '\0';
+			
+					// Skip empty lines
+					if (lineIdx == 0)
+					{
+						while (*p == '\r' || *p == '\n') p++;
+						continue;
+					}
+			
+					// Trim leading/trailing spaces from the line
+					char *start = line;
+					while (*start == ' ' || *start == '\t') start++;
+					char *end = start + strlen(start) - 1;
+					while (end > start && (*end == ' ' || *end == '\t')) end--;
+					*(end + 1) = '\0';
+					if (start != line) memmove(line, start, end - start + 2);
+			
+					if (strlen(line) == 0)
+					{
+						while (*p == '\r' || *p == '\n') p++;
+						continue;
+					}
+			
+					// ---------- Parse the line ----------
+					char *ptr = line;
+					int disabled = 0, force = 0;
+			
+					// Optional leading '#'
+					if (*ptr == '#')
+					{
+						disabled = 1;
+						ptr++;
+						while (*ptr == ' ' || *ptr == '\t') ptr++;
+					}
+					// Optional leading '~'
+					if (*ptr == '~')
+					{
+						force = 1;
+						ptr++;
+						while (*ptr == ' ' || *ptr == '\t') ptr++;
+					}
+			
+					// Now parse: item name, then optional ';limit', then optional '^exclude' tokens
+					char itemName[256] = { 0 };
+					itemName[0] = '\0';
+					int limit = 1;          // default limit
+					char excludeWords[256] = { 0 };
+					excludeWords[0] = '\0';
+			
+					// ---- Collect item name: stop at ';' or '^' or end of string ----
+					char *nameStart = ptr;
+					char *nameEnd = nameStart;
+					while (*nameEnd && *nameEnd != ';' && *nameEnd != '^')
+						nameEnd++;
+			
+					// Copy the name
+					int nameLen = (int)(nameEnd - nameStart);
+					if (nameLen >= (int)sizeof(itemName)) nameLen = sizeof(itemName)-1;
+					strncpy(itemName, nameStart, nameLen);
+					itemName[nameLen] = '\0';
+			
+					// Trim trailing spaces from name
+					char *trimEnd = itemName + strlen(itemName) - 1;
+					while (trimEnd >= itemName && (*trimEnd == ' ' || *trimEnd == '\t'))
+						*trimEnd-- = '\0';
+			
+					// Move ptr to after the name
+					ptr = nameEnd;
+			
+					// ---- Parse quantity limit if ';' ----
+					if (*ptr == ';')
+					{
+						ptr++;
+						limit = atoi(ptr);
+						if (limit < 0) limit = 0;
+						// Advance ptr past the number
+						while (*ptr && *ptr != ' ' && *ptr != '^') ptr++;
+					}
+			
+					// ---- Parse exclude words (each starts with '^') ----
+					// They appear as " ^word1 ^word2 ..."
+					while (*ptr)
+					{
+						// Skip spaces
+						while (*ptr == ' ') ptr++;
+						if (*ptr == '^')
+						{
+							ptr++; // skip '^'
+							// Skip any spaces after caret (optional)
+							while (*ptr == ' ') ptr++;
+							// Collect the exclude word (until next space or end)
+							char word[128] = { 0 };
+							int wlen = 0;
+							while (*ptr && *ptr != ' ' && *ptr != '^')
+							{
+								if (wlen < (int)sizeof(word)-1)
+									word[wlen++] = *ptr;
+								ptr++;
+							}
+							word[wlen] = '\0';
+							if (wlen > 0)
+							{
+								// Add to excludeWords list (space separated)
+								if (excludeWords[0] != '\0')
+									strcat(excludeWords, " ");
+								strcat(excludeWords, word);
+							}
+						}
+						else
+						{
+							// Unexpected character – break to avoid infinite loop
+							break;
+						}
+					}
+			
+					// If the item name is empty, skip this line
+					if (strlen(itemName) == 0)
+					{
+						while (*p == '\r' || *p == '\n') p++;
+						continue;
+					}
+			
+					// Build the raw string using the new '^' exclude marker
+					char raw[512];
+					BuildItemString(raw, sizeof(raw), itemName, disabled, force, limit, excludeWords);
+			
+					// Format for display (shows exclude words prefixed with "exclude: ...")
+					char display[1024];
+					FormatItemForDisplay(raw, display, sizeof(display));
+			
+					// Add to active watchlist
+					puDoMethod(g_ItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
+					puDoMethod(g_ItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
+					puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
+			
+					// Skip any trailing newline characters
+					while (*p == '\r' || *p == '\n') p++;
+				}
+			
+				EndDialog(hDlg, IDOK);
+				return TRUE;
+			}
+
+        case IDCANCEL:
+            EndDialog(hDlg, IDCANCEL);
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
+// Show the dialog and return 1 if OK, 0 if cancelled
+int ShowItemEditDialog(HWND hParent, ItemEditData *pData, int bIsAddMode)
+{
+    HINSTANCE hInst = (HINSTANCE)GetWindowLongPtr(hParent, GWLP_HINSTANCE);
+    // If we can't get instance from parent, fallback to the global one
+    if (!hInst) hInst = GetModuleHandle(NULL);
+    
+    INT_PTR result = DialogBoxParamA(hInst, MAKEINTRESOURCEA(IDD_ITEM_EDIT),
+                                     hParent, ItemEditDlgProc, (LPARAM)pData);
+    return (result == IDOK) ? 1 : 0;
+}
+
+// Forward declaration for the subclass procedure
+LRESULT CALLBACK MainWndProcHook( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData );
+
+static LRESULT CALLBACK BAWndProcHook(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+{
+    if (uMsg == WM_MOVE || uMsg == WM_MOVING)
+    {
+        RECT r;
+        GetWindowRect(hWnd, &r);
+        g_BAWindowX = r.left;
+        g_BAWindowY = r.top;
+    }
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+// ===============================================
+
+
+// ========== Helper functions for item string format ==========
+void BuildItemString(char *dest, size_t destSize,
+                     const char *itemName,
+                     int disabled,
+                     int forceAccept,
+                     int quantityLimit,
+                     const char *excludeWords)
+{
+    dest[0] = '\0';
+    if (disabled) strncat(dest, "#", destSize - strlen(dest) - 1);
+    if (forceAccept) strncat(dest, "~", destSize - strlen(dest) - 1);
+    strncat(dest, itemName, destSize - strlen(dest) - 1);
+    if (quantityLimit > 0) {
+        char buf[16];
+        sprintf(buf, ";%d", quantityLimit);
+        strncat(dest, buf, destSize - strlen(dest) - 1);
+    }
+    if (excludeWords && *excludeWords) {
+        char *tmp = _strdup(excludeWords);
+        char *token = strtok(tmp, ", ");
+        while (token) {
+            strncat(dest, " ^", destSize - strlen(dest) - 2);
+            strncat(dest, token, destSize - strlen(dest) - 1);
+            token = strtok(NULL, ", ");
+        }
+        free(tmp);
+    }
+}
+
 void ParseItemString(const char *src,
                      char *itemName, int itemNameSize,
                      int *disabled,
@@ -194,7 +679,7 @@ void ParseItemString(const char *src,
     *forceAccept = 0;
     *quantityLimit = 0;
     if (excludeWords) excludeWords[0] = '\0';
-    if (itemName) itemName[0] = '\0';
+    itemName[0] = '\0';
     if (!src) return;
 
     const char *p = src;
@@ -206,7 +691,7 @@ void ParseItemString(const char *src,
         p++;
     }
 
-    // Find end of item name – stop at ';' or '^'
+    // Find end of item name – stop at ';' or '^' (was '-')
     const char *nameStart = p;
     const char *nameEnd = nameStart;
     while (*nameEnd && *nameEnd != ';' && *nameEnd != '^')
@@ -232,7 +717,7 @@ void ParseItemString(const char *src,
 
     while (*p == ' ') p++;
 
-    // Parse exclude words – each starts with '^'
+    // Parse exclude words – each starts with '^' (was '-')
     if (excludeWords && excludeSize > 0) {
         excludeWords[0] = '\0';
         while (*p == '^') {
@@ -245,8 +730,9 @@ void ParseItemString(const char *src,
 
             int len = (int)(p - start);
             if (len > 0) {
-                if (excludeWords[0] != '\0')
+                if (excludeWords[0] != '\0') {
                     strncat(excludeWords, " ", excludeSize - strlen(excludeWords) - 1);
+                }
                 strncat(excludeWords, start, len);
             }
             while (*p == ' ') p++;
@@ -254,1076 +740,402 @@ void ParseItemString(const char *src,
     }
 }
 
-// ========== SUPPORT FUNCTIONS FOR HIDDEN TABS WINDOW ==========
-static void PopulateItemList(HWND hList, PULID table)
+// Convert raw item string to a human-readable display label.
+// Format: ItemName [disabled] [force accept] [qty N] [exclude: word1, word2]
+// Only the tags that are actually set are shown.
+void FormatItemForDisplay(const char *raw, char *out, size_t outSize)
 {
-    ListView_DeleteAllItems(hList);
-    PUU32 record = puDoMethod(table, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-    int idx = 0;
-    while (record) {
-        PUU8 *str = (PUU8*)puDoMethod(table, PUM_TABLE_GETFIELDVAL, record, 0);
-        if (str && *str) {
-            char itemName[256] = {0}, exclude[256] = {0};
-            int disabled = 0, force = 0, limit = 0;
+    char itemName[256];
+    int disabled = 0, force = 0, limit = 0;
+    char exclude[256];
 
-            // Check if string looks like raw format (contains ';' or '^')
-            if (strchr((char*)str, ';') || strchr((char*)str, '^')) {
-                // Raw format: parse with ParseItemString
-                ParseItemString((char*)str, itemName, sizeof(itemName),
-                                &disabled, &force, &limit, exclude, sizeof(exclude));
-            } else {
-                // Formatted display: parse with ParseDisplayString
-                ParseDisplayString((char*)str, itemName, sizeof(itemName),
-                                   &disabled, &force, &limit, exclude, sizeof(exclude));
-            }
+    ParseItemString(raw, itemName, sizeof(itemName), &disabled, &force, &limit, exclude, sizeof(exclude));
 
-            LVITEM item = {0};
-            item.mask = LVIF_TEXT;
-            item.iItem = idx;
-            item.pszText = itemName;
-            ListView_InsertItem(hList, &item);
+    out[0] = '\0';
+    strncat(out, itemName, outSize - strlen(out) - 1);
 
-            char qtyStr[16];
-            if (limit > 0)
-                sprintf(qtyStr, "%d", limit);
-            else
-                strcpy(qtyStr, "unlimited");
-            ListView_SetItemText(hList, idx, 1, qtyStr);
-            // For active items, only show force accept if item is not disabled (disabled items are separate)
-            ListView_SetItemText(hList, idx, 2, (force && !disabled) ? "Yes" : "");
-            // Clean exclude words (replace commas with spaces)
-            for (char *c = exclude; *c; c++) if (*c == ',') *c = ' ';
-            ListView_SetItemText(hList, idx, 3, exclude);
-            idx++;
+    if (disabled)
+        strncat(out, " [disabled]", outSize - strlen(out) - 1);
+    if (force)
+        strncat(out, " [force accept]", outSize - strlen(out) - 1);
+    if (limit > 0) {
+        char buf[32];
+        sprintf(buf, " [qty %d]", limit);
+        strncat(out, buf, outSize - strlen(out) - 1);
+    }
+    if (exclude[0]) {
+        // Build comma-separated list from space-separated exclude words
+        char buf[512];
+        char tmp[256];
+        strncpy(tmp, exclude, sizeof(tmp) - 1);
+        tmp[sizeof(tmp) - 1] = '\0';
+
+        char *tok = strtok(tmp, " ");
+        char formatted[256] = "";
+        while (tok) {
+            if (formatted[0]) strncat(formatted, ", ", sizeof(formatted) - strlen(formatted) - 1);
+            strncat(formatted, tok, sizeof(formatted) - strlen(formatted) - 1);
+            tok = strtok(NULL, " ");
         }
-        record = puDoMethod(table, PUM_TABLE_GETNEXTRECORD, record, 0);
+        sprintf(buf, " [exclude: %s]", formatted);
+        strncat(out, buf, outSize - strlen(out) - 1);
     }
 }
 
-static void PopulateDisabledList(HWND hList)
+// Build the string stored in the item watchlist table.
+// The visible portion (before \x01) is the formatted display label.
+// The raw portion (after \x01) is the original encoded string used by all logic.
+// PUL renders up to the first non-printable char, so \x01 acts as a hidden separator.
+// Build only the formatted display string (no \x01, no raw)
+// ========== NEW: Store only formatted display string ==========
+void MakeTableEntry(char *dest, size_t destSize, const char *raw)
 {
-    ListView_DeleteAllItems(hList);
+    // Just format the raw string as human-readable display
+    FormatItemForDisplay(raw, dest, destSize);
+}
+
+// Parse a display string (e.g. "Staff [qty 3] [exclude: rotten]") back into fields
+// Returns 0 on success, -1 if parsing fails
+static int ParseDisplayString(const char *display, char *itemName, size_t itemNameSize,
+                       int *disabled, int *forceAccept, int *quantityLimit,
+                       char *excludeWords, size_t excludeSize)
+{
+    *disabled = 0;
+    *forceAccept = 0;
+    *quantityLimit = 0;
+    if (excludeWords) excludeWords[0] = '\0';
+    if (itemName) itemName[0] = '\0';
+
+    if (!display || !*display) return -1;
+
+    // Work on a copy
+    char buf[1024];
+    strncpy(buf, display, sizeof(buf)-1);
+    buf[sizeof(buf)-1] = '\0';
+
+    // --- 1. Item name: everything up to first '[' or end ---
+    char *nameEnd = strchr(buf, '[');
+    if (!nameEnd) nameEnd = buf + strlen(buf);
+    size_t nameLen = nameEnd - buf;
+    // trim trailing spaces
+    while (nameLen > 0 && buf[nameLen-1] == ' ') nameLen--;
+    if (nameLen >= itemNameSize) nameLen = itemNameSize-1;
+    strncpy(itemName, buf, nameLen);
+    itemName[nameLen] = '\0';
+
+    // --- 2. Parse optional tags ---
+    char *p = buf + nameLen;
+    while (*p) {
+        while (*p == ' ' || *p == '[') p++;
+        if (!*p) break;
+
+        if (strncmp(p, "disabled]", 9) == 0) {
+            *disabled = 1;
+            p += 9;
+        }
+        else if (strncmp(p, "force accept]", 13) == 0) {
+            *forceAccept = 1;
+            p += 13;
+        }
+        else if (strncmp(p, "qty ", 4) == 0) {
+            p += 4;
+            *quantityLimit = atoi(p);
+            while (*p && *p != ']') p++;
+            if (*p == ']') p++;
+        }
+        else if (strncmp(p, "exclude: ", 9) == 0) {
+            p += 9;
+            char *end = strchr(p, ']');
+            if (!end) end = p + strlen(p);
+            size_t len = end - p;
+            if (len > 0 && excludeWords && excludeSize > 0) {
+                strncpy(excludeWords, p, (len < excludeSize-1) ? len : excludeSize-1);
+                excludeWords[len] = '\0';
+                // Convert commas to spaces (our internal format uses space separated)
+                for (char *c = excludeWords; *c; c++)
+                    if (*c == ',') *c = ' ';
+            }
+            p = end;
+            if (*p == ']') p++;
+        }
+        else {
+            // Unknown tag – stop
+            break;
+        }
+    }
+    return 0;
+}
+
+// Move the currently selected item from active list to disabled list
+static void MoveCurrentActiveToDisabled(void)
+{
+    PUU32 listView = puGetObjectFromCollection(g_pCol, CS_ITEMWATCH_LISTVIEW);
+    int selectedIndex = (int)puGetAttribute(listView, PUA_LISTVIEW_SELECTED);
+    if (selectedIndex < 0) {
+        ShowModalMessage(NULL, "No item selected.", "ClickSaver", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    // Get the record from the active table using the selected index
+    PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+    for (int i = 0; i < selectedIndex && record; i++)
+        record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
+    if (!record) {
+        ShowModalMessage(NULL, "No item selected or could not find the selected record.", "ClickSaver", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    // Get the display string
+    PUU8 *display = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
+    if (!display || !*display) return;
+
+    // Add a copy to the disabled table
+    puDoMethod(g_DisabledItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
+    puDoMethod(g_DisabledItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
+    puDoMethod(g_DisabledItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
+
+    // Remove the selected row from the active listview (also deletes the table record)
+    puDoMethod(listView, PUM_LISTVIEW_REMOVE, 0, 0);
+
+    // Determine the new selection index
+    // Get the number of rows by checking the last possible selected index
+    int maxRows = (int)puGetAttribute(listView, PUA_LISTVIEW_SELECTED);
+    // If the listview is empty, set to -1
+    if (maxRows == -1) {
+        puSetAttribute(listView, PUA_LISTVIEW_SELECTED, -1);
+        return;
+    }
+    // The new index is the same as the original if it's still within range, else the last row
+    int newIndex = selectedIndex;
+    if (newIndex >= maxRows) {
+        newIndex = maxRows - 1;
+    }
+    puSetAttribute(listView, PUA_LISTVIEW_SELECTED, newIndex);
+}
+
+static void MoveCurrentDisabledToActive(void)
+{
+    PUU32 listView = puGetObjectFromCollection(g_pCol, CS_DISABLED_ITEMWATCH_LISTVIEW);
+    int selectedIndex = (int)puGetAttribute(listView, PUA_LISTVIEW_SELECTED);
+    if (selectedIndex < 0) {
+        ShowModalMessage(NULL, "No item selected in disabled list.", "ClickSaver", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    // Get the record from the disabled table
     PUU32 record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-    int idx = 0;
+    for (int i = 0; i < selectedIndex && record; i++)
+        record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
+    if (!record) {
+        ShowModalMessage(NULL, "No item selected or could not find the selected disabled record.", "ClickSaver", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    PUU8 *display = (PUU8*)puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
+    if (!display || !*display) return;
+
+    // Add to active table
+    puDoMethod(g_ItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
+    puDoMethod(g_ItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
+    puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
+
+    // Remove from disabled listview (and its table)
+    puDoMethod(listView, PUM_LISTVIEW_REMOVE, 0, 0);
+
+    // Determine new selection in the disabled list
+    int maxRows = (int)puGetAttribute(listView, PUA_LISTVIEW_SELECTED);
+    if (maxRows == -1) {
+        puSetAttribute(listView, PUA_LISTVIEW_SELECTED, -1);
+        return;
+    }
+    int newIndex = selectedIndex;
+    if (newIndex >= maxRows) {
+        newIndex = maxRows - 1;
+    }
+    puSetAttribute(listView, PUA_LISTVIEW_SELECTED, newIndex);
+}
+
+static void RemoveDuplicateItems(void) {
+    // We'll build a hash set of display strings, keeping first occurrence.
+    // Simple O(n^2) for small lists is fine; if list large, use temporary array.
+    PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+    PUU32 prevRecord = 0;
+    int removed = 0;
+
+    // We'll traverse and remove duplicates by comparing each record with all previous ones.
+    // Simpler: collect all display strings into an array, then rebuild table.
+    // But rebuilding might lose order and cause UI issues. Instead, two-pass.
+
+    // First pass: collect unique display strings
+    char **unique = NULL;
+    int uniqueCount = 0;
+    record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
     while (record) {
-        PUU8 *str = (PUU8*)puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
-        if (str && *str) {
+        PUU8 *display = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
+        if (display) {
+            int already = 0;
+            for (int i = 0; i < uniqueCount; i++) {
+                if (strcmp(unique[i], (char*)display) == 0) {
+                    already = 1;
+                    break;
+                }
+            }
+            if (!already) {
+                unique = realloc(unique, (uniqueCount + 1) * sizeof(char*));
+                unique[uniqueCount] = _strdup((char*)display);
+                uniqueCount++;
+            } else {
+                removed++;
+            }
+        }
+        record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
+    }
+
+    if (removed == 0) {
+        free(unique);
+        ShowModalMessage(NULL, "No duplicate items found.", "Remove Duplicates", MB_OK);
+        return;
+    }
+
+    // Rebuild the table from unique list
+    // Clear table
+    record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+    while (record) {
+        puDoMethod(g_ItemWatchList, PUM_TABLE_REMRECORD, record, 0);
+        record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+    }
+    for (int i = 0; i < uniqueCount; i++) {
+        puDoMethod(g_ItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
+        puDoMethod(g_ItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
+        puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)unique[i], 0);
+        free(unique[i]);
+    }
+    free(unique);
+
+    // Refresh listview
+    PUU32 listView = puGetObjectFromCollection(g_pCol, CS_ITEMWATCH_LISTVIEW);
+    puSetAttribute(listView, PUA_LISTVIEW_SELECTED, -1);
+
+    char msg[64];
+    sprintf(msg, "Removed %d duplicate entries.", removed);
+    ShowModalMessage(NULL, msg, "Remove Duplicates", MB_OK);
+}
+
+static int ItemExistsInActiveList(const char *displayString) {
+    PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+    while (record) {
+        PUU8 *existing = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
+        if (existing && strcmp((char*)existing, displayString) == 0) {
+            return 1;
+        }
+        record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
+    }
+    return 0;
+}
+
+static void ImportItemsFromFile(const char *filename, int replaceMode) {
+    if (replaceMode) {
+        // Confirm? Already handled in UI, but safe to double-check
+        if (ShowModalMessage(NULL, "Replace will delete all current items. Continue?", 
+                       "Confirm Replace", MB_YESNO) != IDYES)
+            return;
+        // Clear active watchlist
+        PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+        while (record) {
+            puDoMethod(g_ItemWatchList, PUM_TABLE_REMRECORD, record, 0);
+            record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+        }
+        PUU32 listView = puGetObjectFromCollection(g_pCol, CS_ITEMWATCH_LISTVIEW);
+        puSetAttribute(listView, PUA_LISTVIEW_SELECTED, -1);
+    }
+
+    FILE *fp = fopen(filename, "r");
+    if (!fp) {
+        DisplayErrorMessage("Cannot open file.", TRUE);
+        return;
+    }
+
+    char line[1024];
+    int inItemSection = 0;
+    int addedCount = 0;
+    int duplicateCount = 0;
+
+    while (fgets(line, sizeof(line), fp)) {
+        // Trim newline
+        line[strcspn(line, "\r\n")] = 0;
+
+        if (strcmp(line, "::ItemWatch::") == 0) {
+            inItemSection = 1;
+            continue;
+        }
+        if (strcmp(line, "::END::") == 0 || strncmp(line, "::", 2) == 0)
+            break;
+        if (!inItemSection) continue;
+
+        // Skip empty lines
+        if (strlen(line) == 0) continue;
+
+        // Convert raw line to display string
+        char display[1024];
+        MakeTableEntry(display, sizeof(display), line);
+
+        // Duplicate check (only for append mode; replace already cleared list)
+        if (!replaceMode && ItemExistsInActiveList(display)) {
+            duplicateCount++;
+            continue;
+        }
+
+        // Add item
+        puDoMethod(g_ItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
+        puDoMethod(g_ItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
+        puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
+        addedCount++;
+    }
+    fclose(fp);
+
+    char msg[256];
+    sprintf(msg, "Imported %d items. Duplicates skipped: %d", addedCount, duplicateCount);
+    ShowModalMessage(NULL, msg, "Import Complete", MB_OK);
+}
+
+static void ExportItemsOnly(const char *filename)
+{
+    char fullpath[MAX_PATH];
+    strcpy(fullpath, filename);
+    
+    // Append .cs if not already present (case-insensitive)
+    size_t len = strlen(fullpath);
+    if (len < 3 || _stricmp(fullpath + len - 3, ".cs") != 0)
+        strcat(fullpath, ".cs");
+    
+    FILE *fp = fopen(fullpath, "w");
+    if (!fp) {
+        char err[256];
+        sprintf(err, "Cannot create file:\n%s", fullpath);
+        DisplayErrorMessage(err, TRUE);
+        return;
+    }
+    
+    fprintf(fp, "::ItemWatch::\n");
+    PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+    while (record) {
+        PUU8 *display = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
+        if (display && *display) {
             char itemName[256] = {0}, exclude[256] = {0};
             int disabled = 0, force = 0, limit = 0;
-
-            if (strchr((char*)str, ';') || strchr((char*)str, '^')) {
-                ParseItemString((char*)str, itemName, sizeof(itemName),
-                                &disabled, &force, &limit, exclude, sizeof(exclude));
-            } else {
-                ParseDisplayString((char*)str, itemName, sizeof(itemName),
-                                   &disabled, &force, &limit, exclude, sizeof(exclude));
-            }
-
-            LVITEM item = {0};
-            item.mask = LVIF_TEXT;
-            item.iItem = idx;
-            item.pszText = itemName;
-            ListView_InsertItem(hList, &item);
-
-            char qtyStr[16];
-            if (limit > 0)
-                sprintf(qtyStr, "%d", limit);
-            else
-                strcpy(qtyStr, "unlimited");
-            ListView_SetItemText(hList, idx, 1, qtyStr);
-            ListView_SetItemText(hList, idx, 2, force ? "Yes" : "");
-            for (char *c = exclude; *c; c++) if (*c == ',') *c = ' ';
-            ListView_SetItemText(hList, idx, 3, exclude);
-            idx++;
+            ParseDisplayString((char*)display, itemName, sizeof(itemName),
+                               &disabled, &force, &limit, exclude, sizeof(exclude));
+            char raw[512];
+            BuildItemString(raw, sizeof(raw), itemName, disabled, force, limit, exclude);
+            fprintf(fp, "%s\n", raw);
         }
-        record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
+        record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
     }
+    fprintf(fp, "::END::\n");
+    fclose(fp);
 }
 
-static void PopulateLocationList(HWND hList)
-{
-    ListView_DeleteAllItems(hList);
-    PUU32 record = puDoMethod(g_LocWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-    int idx = 0;
-    while (record) {
-        PUU8 *str = (PUU8*)puDoMethod(g_LocWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
-        if (str && *str) {
-            LVITEM item = {0};
-            item.mask = LVIF_TEXT;
-            item.iItem = idx++;
-            item.pszText = (char*)str;
-            ListView_InsertItem(hList, &item);
-        }
-        record = puDoMethod(g_LocWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
-    }
-}
-
-static void SyncTypeCheckboxes(HWND hDlg)
-{
-    CheckDlgButton(hDlg, IDC_TYPE_REPAIR, PUL_GET_CB(CS_TYPEREPAIR_CB) ? BST_CHECKED : BST_UNCHECKED);
-    CheckDlgButton(hDlg, IDC_TYPE_RETURN, PUL_GET_CB(CS_TYPERETURN_CB) ? BST_CHECKED : BST_UNCHECKED);
-    CheckDlgButton(hDlg, IDC_TYPE_FINDP,  PUL_GET_CB(CS_TYPEFINDP_CB)  ? BST_CHECKED : BST_UNCHECKED);
-    CheckDlgButton(hDlg, IDC_TYPE_FINDI,  PUL_GET_CB(CS_TYPEFINDI_CB)  ? BST_CHECKED : BST_UNCHECKED);
-    CheckDlgButton(hDlg, IDC_TYPE_ASS,    PUL_GET_CB(CS_TYPEASS_CB)    ? BST_CHECKED : BST_UNCHECKED);
-}
-
-static void SyncValueControls(HWND hDlg)
-{
-    char buf[32];
-    sprintf(buf, "%d", puGetAttribute(puGetObjectFromCollection(g_pCol, CS_ITEMVALUE_BUYMOD), PUA_TEXTENTRY_VALUE));
-    SetDlgItemTextA(hDlg, IDC_VALUE_BUYMOD, buf);
-    sprintf(buf, "%d", puGetAttribute(puGetObjectFromCollection(g_pCol, CS_ITEMVALUE_SINGLE), PUA_TEXTENTRY_VALUE));
-    SetDlgItemTextA(hDlg, IDC_VALUE_SINGLE_EDIT, buf);
-    CheckDlgButton(hDlg, IDC_VALUE_SINGLE_ENABLE, PUL_GET_CB(CS_ITEMVALUE_MSINGLE) ? BST_CHECKED : BST_UNCHECKED);
-    sprintf(buf, "%d", puGetAttribute(puGetObjectFromCollection(g_pCol, CS_ITEMVALUE_TOTAL), PUA_TEXTENTRY_VALUE));
-    SetDlgItemTextA(hDlg, IDC_VALUE_TOTAL_EDIT, buf);
-    CheckDlgButton(hDlg, IDC_VALUE_TOTAL_ENABLE, PUL_GET_CB(CS_ITEMVALUE_MTOTAL) ? BST_CHECKED : BST_UNCHECKED);
-}
-
-static void SyncSliderValues(HWND hDlg)
-{
-    SetDlgItemInt(hDlg, IDC_SLIDER_EASY_HARD,   puGetAttribute(puGetObjectFromCollection(g_pCol, CS_SLIDER_EASY_HARD), PUA_TEXTENTRY_VALUE), FALSE);
-    SetDlgItemInt(hDlg, IDC_SLIDER_GOOD_BAD,    puGetAttribute(puGetObjectFromCollection(g_pCol, CS_SLIDER_GOOD_BAD), PUA_TEXTENTRY_VALUE), FALSE);
-    SetDlgItemInt(hDlg, IDC_SLIDER_ORDER_CHAOS, puGetAttribute(puGetObjectFromCollection(g_pCol, CS_SLIDER_ORDER_CHAOS), PUA_TEXTENTRY_VALUE), FALSE);
-    SetDlgItemInt(hDlg, IDC_SLIDER_OPEN_HIDDEN, puGetAttribute(puGetObjectFromCollection(g_pCol, CS_SLIDER_OPEN_HIDDEN), PUA_TEXTENTRY_VALUE), FALSE);
-    SetDlgItemInt(hDlg, IDC_SLIDER_PHYS_MYST,   puGetAttribute(puGetObjectFromCollection(g_pCol, CS_SLIDER_PHYS_MYST), PUA_TEXTENTRY_VALUE), FALSE);
-    SetDlgItemInt(hDlg, IDC_SLIDER_HEADON_STEALTH, puGetAttribute(puGetObjectFromCollection(g_pCol, CS_SLIDER_HEADON_STEALTH), PUA_TEXTENTRY_VALUE), FALSE);
-    SetDlgItemInt(hDlg, IDC_SLIDER_MONEY_XP,    puGetAttribute(puGetObjectFromCollection(g_pCol, CS_SLIDER_MONEY_XP), PUA_TEXTENTRY_VALUE), FALSE);
-}
-
-typedef struct {
-    char* buffer;
-    const char* prompt;
-} InputBoxParams;
-
-static INT_PTR CALLBACK InputBoxProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-    static InputBoxParams* params = NULL;
-    switch (msg) {
-    case WM_INITDIALOG:
-        params = (InputBoxParams*)lParam;
-        SetDlgItemTextA(hDlg, IDC_STATIC, params->prompt);
-        SetFocus(GetDlgItem(hDlg, IDC_EDIT));
-        return FALSE;
-    case WM_COMMAND:
-        if (LOWORD(wParam) == IDOK) {
-            GetDlgItemTextA(hDlg, IDC_EDIT, params->buffer, 512);
-            EndDialog(hDlg, IDOK);
-            return TRUE;
-        } else if (LOWORD(wParam) == IDCANCEL) {
-            EndDialog(hDlg, IDCANCEL);
-            return TRUE;
-        }
-        break;
-    }
-    return FALSE;
-}
-
-static int InputBox(HWND hParent, const char* prompt, char* outBuf, int bufSize)
-{
-    InputBoxParams params;
-    params.buffer = outBuf;
-    params.prompt = prompt;
-    outBuf[0] = '\0';
-    return (DialogBoxParam(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_INPUTBOX),
-                           hParent, InputBoxProc, (LPARAM)&params) == IDOK);
-}
-
-static void SyncHiddenTabCheckboxes(HWND hDlg)
-{
-    // Items
-    CheckDlgButton(hDlg, IDC_ITEM_MATCH_CB, PUL_GET_CB(CS_ALERTITEM_CB) ? BST_CHECKED : BST_UNCHECKED);
-    CheckDlgButton(hDlg, IDC_ITEM_HIGHLIGHT_CB, PUL_GET_CB(CS_HIGHLIGHTITEM_CB) ? BST_CHECKED : BST_UNCHECKED);
-    // Locations
-    CheckDlgButton(hDlg, IDC_LOC_MATCH_CB, PUL_GET_CB(CS_ALERTLOC_CB) ? BST_CHECKED : BST_UNCHECKED);
-    CheckDlgButton(hDlg, IDC_LOC_HIGHLIGHT_CB, PUL_GET_CB(CS_HIGHLIGHTLOC_CB) ? BST_CHECKED : BST_UNCHECKED);
-    // Types
-    CheckDlgButton(hDlg, IDC_TYPE_MATCH_CB, PUL_GET_CB(CS_ALERTTYPE_CB) ? BST_CHECKED : BST_UNCHECKED);
-    CheckDlgButton(hDlg, IDC_TYPE_HIGHLIGHT_CB, PUL_GET_CB(CS_HIGHLIGHTTYPE_CB) ? BST_CHECKED : BST_UNCHECKED);
-}
-
-// ========== HIDDEN TABS DIALOG PROCEDURE (WIN32) ==========
-static INT_PTR CALLBACK HiddenTabsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-    static HWND hTab;
-    static HWND hItemList, hDisabledList, hLocationList;
-    static HWND hTypeRepair, hTypeReturn, hTypeFindP, hTypeFindI, hTypeAss;
-    static HWND hValueBuyMod, hValueSingleEnable, hValueSingleEdit, hValueTotalEnable, hValueTotalEdit;
-	static HWND hItemValueHint1, hItemValueHint2;
-	static HWND hSlidersHint1, hSlidersHint2;
-    static HWND hSliderEasyHard, hSliderGoodBad, hSliderOrderChaos, hSliderOpenHidden, hSliderPhysMyst, hSliderHeadonStealth, hSliderMoneyXp;
-    static HWND hBtnSetSliders;
-    // Labels
-    static HWND hLabelBuyMod, hLabelBuyModHint, hLabelSingleValue, hLabelTotalValue;
-    static HWND hLabelEasyHard, hLabelGoodBad, hLabelOrderChaos, hLabelOpenHidden, hLabelPhysMyst, hLabelHeadonStealth, hLabelMoneyXp;
-	static HWND hItemMatchLabel, hItemHighlightLabel;
-	static HWND hLocMatchLabel, hLocHighlightLabel;
-	static HWND hTypeMatchLabel, hTypeHighlightLabel;
-    static int currentTab = 0;
-
-
-    switch (msg) {
-		case WM_INITDIALOG:
-			{
-				hTab = GetDlgItem(hDlg, IDC_HIDDEN_TAB);
-				if (!hTab) return FALSE;
-			
-				TCITEM tie = {0};
-				tie.mask = TCIF_TEXT;
-				tie.pszText = "Items";      TabCtrl_InsertItem(hTab, 0, &tie);
-				tie.pszText = "Disabled";   TabCtrl_InsertItem(hTab, 1, &tie);
-				tie.pszText = "Locations";  TabCtrl_InsertItem(hTab, 2, &tie);
-				tie.pszText = "Mission Types"; TabCtrl_InsertItem(hTab, 3, &tie);
-				tie.pszText = "Item Values"; TabCtrl_InsertItem(hTab, 4, &tie);
-				tie.pszText = "Sliders";    TabCtrl_InsertItem(hTab, 5, &tie);
-			
-				// Get control handles
-				hItemList = GetDlgItem(hDlg, IDC_ITEM_LIST);
-				hDisabledList = GetDlgItem(hDlg, IDC_DISABLED_LIST);
-				hLocationList = GetDlgItem(hDlg, IDC_LOCATION_LIST);
-				hTypeRepair = GetDlgItem(hDlg, IDC_TYPE_REPAIR);
-				hTypeReturn = GetDlgItem(hDlg, IDC_TYPE_RETURN);
-				hTypeFindP  = GetDlgItem(hDlg, IDC_TYPE_FINDP);
-				hTypeFindI  = GetDlgItem(hDlg, IDC_TYPE_FINDI);
-				hTypeAss    = GetDlgItem(hDlg, IDC_TYPE_ASS);
-				hValueBuyMod = GetDlgItem(hDlg, IDC_VALUE_BUYMOD);
-				hValueSingleEnable = GetDlgItem(hDlg, IDC_VALUE_SINGLE_ENABLE);
-				hValueSingleEdit   = GetDlgItem(hDlg, IDC_VALUE_SINGLE_EDIT);
-				hValueTotalEnable  = GetDlgItem(hDlg, IDC_VALUE_TOTAL_ENABLE);
-				hValueTotalEdit    = GetDlgItem(hDlg, IDC_VALUE_TOTAL_EDIT);
-				hItemValueHint1 = GetDlgItem(hDlg, IDC_ITEMVALUE_HINT1);
-				hItemValueHint2 = GetDlgItem(hDlg, IDC_ITEMVALUE_HINT2);
-				hSlidersHint1 = GetDlgItem(hDlg, IDC_SLIDERS_HINT1);
-				hSlidersHint2 = GetDlgItem(hDlg, IDC_SLIDERS_HINT2);
-				hSliderEasyHard     = GetDlgItem(hDlg, IDC_SLIDER_EASY_HARD);
-				hSliderGoodBad      = GetDlgItem(hDlg, IDC_SLIDER_GOOD_BAD);
-				hSliderOrderChaos   = GetDlgItem(hDlg, IDC_SLIDER_ORDER_CHAOS);
-				hSliderOpenHidden   = GetDlgItem(hDlg, IDC_SLIDER_OPEN_HIDDEN);
-				hSliderPhysMyst     = GetDlgItem(hDlg, IDC_SLIDER_PHYS_MYST);
-				hSliderHeadonStealth = GetDlgItem(hDlg, IDC_SLIDER_HEADON_STEALTH);
-				hSliderMoneyXp      = GetDlgItem(hDlg, IDC_SLIDER_MONEY_XP);
-				hBtnSetSliders      = GetDlgItem(hDlg, IDC_BTN_SET_SLIDERS);
-				// Labels
-				hLabelBuyMod        = GetDlgItem(hDlg, IDC_LABEL_BUYMOD);
-				hLabelBuyModHint    = GetDlgItem(hDlg, IDC_LABEL_BUYMOD_HINT);
-				hLabelSingleValue   = GetDlgItem(hDlg, IDC_LABEL_SINGLE_VALUE);
-				hLabelTotalValue    = GetDlgItem(hDlg, IDC_LABEL_TOTAL_VALUE);
-				hLabelEasyHard      = GetDlgItem(hDlg, IDC_LABEL_EASY_HARD);
-				hLabelGoodBad       = GetDlgItem(hDlg, IDC_LABEL_GOOD_BAD);
-				hLabelOrderChaos    = GetDlgItem(hDlg, IDC_LABEL_ORDER_CHAOS);
-				hLabelOpenHidden    = GetDlgItem(hDlg, IDC_LABEL_OPEN_HIDDEN);
-				hLabelPhysMyst      = GetDlgItem(hDlg, IDC_LABEL_PHYS_MYST);
-				hLabelHeadonStealth = GetDlgItem(hDlg, IDC_LABEL_HEADON_STEALTH);
-				hLabelMoneyXp       = GetDlgItem(hDlg, IDC_LABEL_MONEY_XP);
-				hItemMatchLabel = GetDlgItem(hDlg, IDC_ITEM_MATCH_LABEL);
-				hItemHighlightLabel = GetDlgItem(hDlg, IDC_ITEM_HIGHLIGHT_LABEL);
-				hLocMatchLabel = GetDlgItem(hDlg, IDC_LOC_MATCH_LABEL);
-				hLocHighlightLabel = GetDlgItem(hDlg, IDC_LOC_HIGHLIGHT_LABEL);
-				hTypeMatchLabel = GetDlgItem(hDlg, IDC_TYPE_MATCH_LABEL);
-				hTypeHighlightLabel = GetDlgItem(hDlg, IDC_TYPE_HIGHLIGHT_LABEL);
-			
-				// Set listview styles
-				ListView_SetExtendedListViewStyle(hItemList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
-				ListView_SetExtendedListViewStyle(hDisabledList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
-				ListView_SetExtendedListViewStyle(hLocationList, LVS_EX_FULLROWSELECT);
-			
-				LVCOLUMN col = {0};
-				col.mask = LVCF_TEXT | LVCF_WIDTH;
-			
-				col.pszText = "Item Name";
-				col.cx = 160;
-				ListView_InsertColumn(hItemList, 0, &col);
-				ListView_InsertColumn(hDisabledList, 0, &col);
-			
-				col.pszText = "Qty";
-				col.cx = 35;
-				ListView_InsertColumn(hItemList, 1, &col);
-				ListView_InsertColumn(hDisabledList, 1, &col);
-			
-				col.pszText = "Force";
-				col.cx = 40;
-				ListView_InsertColumn(hItemList, 2, &col);
-				ListView_InsertColumn(hDisabledList, 2, &col);
-			
-				col.pszText = "Exclude";
-				col.cx = 120;
-				ListView_InsertColumn(hItemList, 3, &col);
-				ListView_InsertColumn(hDisabledList, 3, &col);
-			
-				// Locations listview
-				col.pszText = "Location";
-				col.cx = 320;
-				ListView_InsertColumn(hLocationList, 0, &col);
-			
-				// ========== INITIALISE FIRST TAB (ITEMS) – HIDE ALL OTHER CONTROLS ==========
-				ShowWindow(hItemList, SW_SHOW);
-				ShowWindow(hDisabledList, SW_HIDE);
-				ShowWindow(hLocationList, SW_HIDE);
-				ShowWindow(hTypeRepair, SW_HIDE);
-				ShowWindow(hTypeReturn, SW_HIDE);
-				ShowWindow(hTypeFindP, SW_HIDE);
-				ShowWindow(hTypeFindI, SW_HIDE);
-				ShowWindow(hTypeAss, SW_HIDE);
-				ShowWindow(hValueBuyMod, SW_HIDE);
-				ShowWindow(hValueSingleEnable, SW_HIDE);
-				ShowWindow(hValueSingleEdit, SW_HIDE);
-				ShowWindow(hValueTotalEnable, SW_HIDE);
-				ShowWindow(hValueTotalEdit, SW_HIDE);
-				ShowWindow(hLabelBuyMod, SW_HIDE);
-				ShowWindow(hLabelBuyModHint, SW_HIDE);
-				ShowWindow(hLabelSingleValue, SW_HIDE);
-				ShowWindow(hLabelTotalValue, SW_HIDE);
-				ShowWindow(hSliderEasyHard, SW_HIDE);
-				ShowWindow(hSliderGoodBad, SW_HIDE);
-				ShowWindow(hSliderOrderChaos, SW_HIDE);
-				ShowWindow(hSliderOpenHidden, SW_HIDE);
-				ShowWindow(hSliderPhysMyst, SW_HIDE);
-				ShowWindow(hSliderHeadonStealth, SW_HIDE);
-				ShowWindow(hSliderMoneyXp, SW_HIDE);
-				ShowWindow(hLabelEasyHard, SW_HIDE);
-				ShowWindow(hLabelGoodBad, SW_HIDE);
-				ShowWindow(hLabelOrderChaos, SW_HIDE);
-				ShowWindow(hLabelOpenHidden, SW_HIDE);
-				ShowWindow(hLabelPhysMyst, SW_HIDE);
-				ShowWindow(hLabelHeadonStealth, SW_HIDE);
-				ShowWindow(hLabelMoneyXp, SW_HIDE);
-				ShowWindow(hBtnSetSliders, SW_HIDE);
-				ShowWindow(hItemValueHint1, SW_HIDE);
-				ShowWindow(hItemValueHint2, SW_HIDE);
-				ShowWindow(hSlidersHint1, SW_HIDE);
-				ShowWindow(hSlidersHint2, SW_HIDE);
-			
-				// Items tab buttons
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_ADD), SW_SHOW);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE), SW_SHOW);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_EDIT), SW_SHOW);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_DISABLE), SW_SHOW);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_IMPORT), SW_SHOW);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_EXPORT), SW_SHOW);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE_DUPLICATES), SW_SHOW);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE_ALL), SW_SHOW);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_ENABLE), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE_DISABLED), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE_ALL_DISABLED), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_LOCATION_ADD), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_LOCATION_REMOVE), SW_HIDE);
-			
-				// ========== CRITICAL: Show the Items tab’s own checkboxes ==========
-				ShowWindow(GetDlgItem(hDlg, IDC_ITEM_MATCH_CB), SW_SHOW);
-				ShowWindow(GetDlgItem(hDlg, IDC_ITEM_HIGHLIGHT_CB), SW_SHOW);
-				// Also ensure the Locations and Types tab checkboxes are hidden (they already are)
-				ShowWindow(GetDlgItem(hDlg, IDC_LOC_MATCH_CB), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_LOC_HIGHLIGHT_CB), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_TYPE_MATCH_CB), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_TYPE_HIGHLIGHT_CB), SW_HIDE);
-			
-				PopulateItemList(hItemList, g_ItemWatchList);
-				PopulateDisabledList(hDisabledList);
-				PopulateLocationList(hLocationList);
-				ListView_SetColumnWidth(hLocationList, 0, LVSCW_AUTOSIZE_USEHEADER);
-				SyncTypeCheckboxes(hDlg);
-				SyncValueControls(hDlg);
-				SyncSliderValues(hDlg);
-				SyncHiddenTabCheckboxes(hDlg);
-			
-				return TRUE;
-			}
-
-    case WM_NOTIFY:
-			{
-				NMHDR *pnmh = (NMHDR*)lParam;
-			
-				// Tab change handling
-				if (pnmh->idFrom == IDC_HIDDEN_TAB && pnmh->code == TCN_SELCHANGE) {
-				int newTab = TabCtrl_GetCurSel(hTab);
-				if (newTab == currentTab) break;
-				
-				// Hide ALL tab-specific controls (including all checkboxes)
-				ShowWindow(hItemList, SW_HIDE);
-				ShowWindow(hDisabledList, SW_HIDE);
-				ShowWindow(hLocationList, SW_HIDE);
-				ShowWindow(hTypeRepair, SW_HIDE);
-				ShowWindow(hTypeReturn, SW_HIDE);
-				ShowWindow(hTypeFindP, SW_HIDE);
-				ShowWindow(hTypeFindI, SW_HIDE);
-				ShowWindow(hTypeAss, SW_HIDE);
-				ShowWindow(hValueBuyMod, SW_HIDE);
-				ShowWindow(hValueSingleEnable, SW_HIDE);
-				ShowWindow(hValueSingleEdit, SW_HIDE);
-				ShowWindow(hValueTotalEnable, SW_HIDE);
-				ShowWindow(hValueTotalEdit, SW_HIDE);
-				ShowWindow(hLabelBuyMod, SW_HIDE);
-				ShowWindow(hLabelBuyModHint, SW_HIDE);
-				ShowWindow(hLabelSingleValue, SW_HIDE);
-				ShowWindow(hLabelTotalValue, SW_HIDE);
-				ShowWindow(hSliderEasyHard, SW_HIDE);
-				ShowWindow(hSliderGoodBad, SW_HIDE);
-				ShowWindow(hSliderOrderChaos, SW_HIDE);
-				ShowWindow(hSliderOpenHidden, SW_HIDE);
-				ShowWindow(hSliderPhysMyst, SW_HIDE);
-				ShowWindow(hSliderHeadonStealth, SW_HIDE);
-				ShowWindow(hSliderMoneyXp, SW_HIDE);
-				ShowWindow(hLabelEasyHard, SW_HIDE);
-				ShowWindow(hLabelGoodBad, SW_HIDE);
-				ShowWindow(hLabelOrderChaos, SW_HIDE);
-				ShowWindow(hLabelOpenHidden, SW_HIDE);
-				ShowWindow(hLabelPhysMyst, SW_HIDE);
-				ShowWindow(hLabelHeadonStealth, SW_HIDE);
-				ShowWindow(hLabelMoneyXp, SW_HIDE);
-				ShowWindow(hBtnSetSliders, SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_ADD), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_EDIT), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_DISABLE), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_IMPORT), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_EXPORT), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE_DUPLICATES), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE_ALL), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_ENABLE), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE_DISABLED), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE_ALL_DISABLED), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_LOCATION_ADD), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_LOCATION_REMOVE), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_ITEM_MATCH_CB), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_ITEM_HIGHLIGHT_CB), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_LOC_MATCH_CB), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_LOC_HIGHLIGHT_CB), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_TYPE_MATCH_CB), SW_HIDE);
-				ShowWindow(GetDlgItem(hDlg, IDC_TYPE_HIGHLIGHT_CB), SW_HIDE);
-				ShowWindow(hSlidersHint1, SW_HIDE);
-				ShowWindow(hSlidersHint2, SW_HIDE);
-				
-				// Show only the controls for the selected tab
-				switch (newTab) {
-					case 0: // Items
-						ShowWindow(hItemList, SW_SHOW);
-						ShowWindow(GetDlgItem(hDlg, IDC_BTN_ADD), SW_SHOW);
-						ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE), SW_SHOW);
-						ShowWindow(GetDlgItem(hDlg, IDC_BTN_EDIT), SW_SHOW);
-						ShowWindow(GetDlgItem(hDlg, IDC_BTN_DISABLE), SW_SHOW);
-						ShowWindow(GetDlgItem(hDlg, IDC_BTN_IMPORT), SW_SHOW);
-						ShowWindow(GetDlgItem(hDlg, IDC_BTN_EXPORT), SW_SHOW);
-						ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE_DUPLICATES), SW_SHOW);
-						ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE_ALL), SW_SHOW);
-						ShowWindow(GetDlgItem(hDlg, IDC_ITEM_MATCH_CB), SW_SHOW);
-						ShowWindow(GetDlgItem(hDlg, IDC_ITEM_HIGHLIGHT_CB), SW_SHOW);
-						 ShowWindow(hItemMatchLabel, SW_SHOW);
-						ShowWindow(hItemHighlightLabel, SW_SHOW);
-						// Explicitly hide mission type checkboxes (safety)
-						ShowWindow(hTypeRepair, SW_HIDE);
-						ShowWindow(hTypeReturn, SW_HIDE);
-						ShowWindow(hTypeFindP, SW_HIDE);
-						ShowWindow(hTypeFindI, SW_HIDE);
-						ShowWindow(hTypeAss, SW_HIDE);
-						ShowWindow(hItemValueHint1, SW_HIDE);
-						ShowWindow(hItemValueHint2, SW_HIDE);
-						ShowWindow(hLocMatchLabel, SW_HIDE);
-						ShowWindow(hLocHighlightLabel, SW_HIDE);
-						ShowWindow(hTypeMatchLabel, SW_HIDE);
-						ShowWindow(hTypeHighlightLabel, SW_HIDE);
-						PopulateItemList(hItemList, g_ItemWatchList);
-						break;
-					
-						case 1: // Disabled
-							ShowWindow(hDisabledList, SW_SHOW);
-							ShowWindow(GetDlgItem(hDlg, IDC_BTN_ENABLE), SW_SHOW);
-							ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE_DISABLED), SW_SHOW);
-							ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE_ALL_DISABLED), SW_SHOW);
-							// Disabled tab – no checkboxes – hide all
-							ShowWindow(GetDlgItem(hDlg, IDC_ITEM_MATCH_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_ITEM_HIGHLIGHT_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_LOC_MATCH_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_LOC_HIGHLIGHT_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_MATCH_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_HIGHLIGHT_CB), SW_HIDE);
-							ShowWindow(hItemValueHint1, SW_HIDE);
-							ShowWindow(hItemValueHint2, SW_HIDE);
-							ShowWindow(hItemMatchLabel, SW_HIDE);
-							ShowWindow(hItemHighlightLabel, SW_HIDE);
-							ShowWindow(hLocMatchLabel, SW_HIDE);
-							ShowWindow(hLocHighlightLabel, SW_HIDE);
-							ShowWindow(hTypeMatchLabel, SW_HIDE);
-							ShowWindow(hTypeHighlightLabel, SW_HIDE);
-							PopulateDisabledList(hDisabledList);
-							break;
-					
-						case 2: // Locations
-							ShowWindow(hLocationList, SW_SHOW);
-							ShowWindow(GetDlgItem(hDlg, IDC_LOCATION_ADD), SW_SHOW);
-							ShowWindow(GetDlgItem(hDlg, IDC_LOCATION_REMOVE), SW_SHOW);
-							// Locations checkboxes
-							ShowWindow(GetDlgItem(hDlg, IDC_LOC_MATCH_CB), SW_SHOW);
-							ShowWindow(GetDlgItem(hDlg, IDC_LOC_HIGHLIGHT_CB), SW_SHOW);
-							ShowWindow(GetDlgItem(hDlg, IDC_LOC_MATCH_LABEL), SW_SHOW);
-							ShowWindow(GetDlgItem(hDlg, IDC_LOC_HIGHLIGHT_LABEL), SW_SHOW);
-							// Hide others
-							ShowWindow(GetDlgItem(hDlg, IDC_ITEM_MATCH_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_ITEM_HIGHLIGHT_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_MATCH_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_HIGHLIGHT_CB), SW_HIDE);
-							ShowWindow(hItemValueHint1, SW_HIDE);
-							ShowWindow(hItemValueHint2, SW_HIDE);
-							ShowWindow(hItemMatchLabel, SW_HIDE);
-							ShowWindow(hItemHighlightLabel, SW_HIDE);
-							ShowWindow(hTypeMatchLabel, SW_HIDE);
-							ShowWindow(hTypeHighlightLabel, SW_HIDE);
-							PopulateLocationList(hLocationList);
-							break;
-					
-						case 3: // Mission Types
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_REPAIR), SW_SHOW);
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_RETURN), SW_SHOW);
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_FINDP), SW_SHOW);
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_FINDI), SW_SHOW);
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_ASS), SW_SHOW);
-							// Types checkboxes
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_MATCH_CB), SW_SHOW);
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_HIGHLIGHT_CB), SW_SHOW);
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_MATCH_LABEL), SW_SHOW);
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_HIGHLIGHT_LABEL), SW_SHOW);
-							// Hide others
-							ShowWindow(GetDlgItem(hDlg, IDC_ITEM_MATCH_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_ITEM_HIGHLIGHT_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_LOC_MATCH_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_LOC_HIGHLIGHT_CB), SW_HIDE);
-							ShowWindow(hItemValueHint1, SW_HIDE);
-							ShowWindow(hItemValueHint2, SW_HIDE);
-							
-							ShowWindow(hItemMatchLabel, SW_HIDE);
-							ShowWindow(hItemHighlightLabel, SW_HIDE);
-							ShowWindow(hLocMatchLabel, SW_HIDE);
-							ShowWindow(hLocHighlightLabel, SW_HIDE);
-							
-							SyncTypeCheckboxes(hDlg);
-							break;
-					
-						case 4: // Item Values
-							ShowWindow(hValueBuyMod, SW_SHOW);
-							ShowWindow(hValueSingleEnable, SW_SHOW);
-							ShowWindow(hValueSingleEdit, SW_SHOW);
-							ShowWindow(hValueTotalEnable, SW_SHOW);
-							ShowWindow(hValueTotalEdit, SW_SHOW);
-							ShowWindow(hLabelBuyMod, SW_SHOW);
-							ShowWindow(hLabelBuyModHint, SW_SHOW);
-							ShowWindow(hLabelSingleValue, SW_SHOW);
-							ShowWindow(hLabelTotalValue, SW_SHOW);
-							ShowWindow(hItemValueHint1, SW_SHOW);
-							ShowWindow(hItemValueHint2, SW_SHOW);
-							ShowWindow(hSlidersHint1, SW_HIDE);
-							ShowWindow(hSlidersHint2, SW_HIDE);
-							// Hide all generic checkboxes
-							ShowWindow(GetDlgItem(hDlg, IDC_ITEM_MATCH_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_ITEM_HIGHLIGHT_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_LOC_MATCH_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_LOC_HIGHLIGHT_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_MATCH_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_HIGHLIGHT_CB), SW_HIDE);
-							ShowWindow(hItemMatchLabel, SW_HIDE);
-							ShowWindow(hItemHighlightLabel, SW_HIDE);
-							ShowWindow(hLocMatchLabel, SW_HIDE);
-							ShowWindow(hLocHighlightLabel, SW_HIDE);
-							ShowWindow(hTypeMatchLabel, SW_HIDE);
-							ShowWindow(hTypeHighlightLabel, SW_HIDE);
-							SyncValueControls(hDlg);
-							break;
-					
-						case 5: // Sliders
-							ShowWindow(hSliderEasyHard, SW_SHOW);
-							ShowWindow(hSliderGoodBad, SW_SHOW);
-							ShowWindow(hSliderOrderChaos, SW_SHOW);
-							ShowWindow(hSliderOpenHidden, SW_SHOW);
-							ShowWindow(hSliderPhysMyst, SW_SHOW);
-							ShowWindow(hSliderHeadonStealth, SW_SHOW);
-							ShowWindow(hSliderMoneyXp, SW_SHOW);
-							ShowWindow(hLabelEasyHard, SW_SHOW);
-							ShowWindow(hLabelGoodBad, SW_SHOW);
-							ShowWindow(hLabelOrderChaos, SW_SHOW);
-							ShowWindow(hLabelOpenHidden, SW_SHOW);
-							ShowWindow(hLabelPhysMyst, SW_SHOW);
-							ShowWindow(hLabelHeadonStealth, SW_SHOW);
-							ShowWindow(hLabelMoneyXp, SW_SHOW);
-							ShowWindow(hBtnSetSliders, SW_SHOW);
-							ShowWindow(hSlidersHint1, SW_SHOW);
-							ShowWindow(hSlidersHint2, SW_SHOW);
-							ShowWindow(hItemValueHint1, SW_HIDE);
-							ShowWindow(hItemValueHint2, SW_HIDE);
-							// Hide all generic checkboxes
-							ShowWindow(GetDlgItem(hDlg, IDC_ITEM_MATCH_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_ITEM_HIGHLIGHT_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_LOC_MATCH_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_LOC_HIGHLIGHT_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_MATCH_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_HIGHLIGHT_CB), SW_HIDE);
-							ShowWindow(hItemMatchLabel, SW_HIDE);
-							ShowWindow(hItemHighlightLabel, SW_HIDE);
-							ShowWindow(hLocMatchLabel, SW_HIDE);
-							ShowWindow(hLocHighlightLabel, SW_HIDE);
-							ShowWindow(hTypeMatchLabel, SW_HIDE);
-							ShowWindow(hTypeHighlightLabel, SW_HIDE);
-							SyncSliderValues(hDlg);
-							break;
-					
-						default:
-							// Fallback – hide all generic checkboxes
-							ShowWindow(GetDlgItem(hDlg, IDC_ITEM_MATCH_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_ITEM_HIGHLIGHT_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_LOC_MATCH_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_LOC_HIGHLIGHT_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_MATCH_CB), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_TYPE_HIGHLIGHT_CB), SW_HIDE);
-							break;
-					}
-					currentTab = newTab;
-				}
-				// Double-click handling for listviews (outside the tab change block)
-				else if (pnmh->idFrom == IDC_ITEM_LIST && pnmh->code == NM_DBLCLK) {
-					PostMessage(hDlg, WM_COMMAND, MAKEWPARAM(IDC_BTN_EDIT, BN_CLICKED), 0);
-					return TRUE;
-				}
-				else if (pnmh->idFrom == IDC_DISABLED_LIST && pnmh->code == NM_DBLCLK) {
-						int sel = ListView_GetNextItem(hDisabledList, -1, LVNI_SELECTED);
-						if (sel < 0) return TRUE;
-						PUU32 record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-						for (int i = 0; i < sel && record; i++)
-							record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
-						if (!record) return TRUE;
-						PUU8* oldStr = (PUU8*)puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
-						if (!oldStr) return TRUE;
-					
-						ItemEditData data;
-						memset(&data, 0, sizeof(data));
-						const char* str = (const char*)oldStr;
-						if (strchr(str, ';') || strchr(str, '^')) {
-							ParseItemString(str, data.itemName, sizeof(data.itemName),
-											&data.disabled, &data.force, &data.limit, data.exclude, sizeof(data.exclude));
-						} else {
-							ParseDisplayString(str, data.itemName, sizeof(data.itemName),
-											&data.disabled, &data.force, &data.limit, data.exclude, sizeof(data.exclude));
-						}
-						data.isAdd = 0;
-					
-						if (ShowItemEditDialog(hDlg, &data, 0)) {
-							char raw[512], newDisplay[1024];
-							BuildItemString(raw, sizeof(raw), data.itemName, data.disabled, data.force, data.limit, data.exclude);
-							FormatItemForDisplay(raw, newDisplay, sizeof(newDisplay));
-							puSetAttribute(g_DisabledItemWatchList, PUA_TABLE_CURRENTFIELD, 0);
-							puSetAttribute(g_DisabledItemWatchList, PUA_TABLE_CURRENTRECORD, record);
-							puDoMethod(g_DisabledItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)newDisplay, 0);
-							PopulateDisabledList(hDisabledList);
-						}
-						return TRUE;
-					}
-				else if (pnmh->idFrom == IDC_LOCATION_LIST && pnmh->code == NM_DBLCLK) {
-					// Optional: edit location (not implemented yet)
-					return TRUE;
-				}
-				break;
-			}
-	case WM_CTLCOLORDLG:
-		{
-			HDC hdc = (HDC)wParam;
-			static HBRUSH hBrush = NULL;
-			if (!hBrush)
-				hBrush = CreateSolidBrush(RGB(170, 170, 170));
-			return (INT_PTR)hBrush;
-		}
-		
-	case WM_DRAWITEM:
-		{
-			DRAWITEMSTRUCT *dis = (DRAWITEMSTRUCT*)lParam;
-			if (dis->CtlType != ODT_BUTTON) break;
-		
-			HDC hdc = dis->hDC;
-			RECT rc = dis->rcItem;
-		
-			// Colors
-			COLORREF bgNormal   = RGB(104, 137, 161);
-			COLORREF bgHover    = RGB(70, 70, 90);
-			COLORREF bgPressed  = RGB(30, 30, 40);
-			COLORREF borderCol  = RGB(100, 100, 140);
-			COLORREF textCol    = RGB(0, 0, 0);
-		
-			// Pick bg based on state
-			COLORREF bg = bgNormal;
-			if (dis->itemState & ODS_SELECTED)
-				bg = bgPressed;
-		
-			// Fill background
-			HBRUSH hBrush = CreateSolidBrush(bg);
-			FillRect(hdc, &rc, hBrush);
-			DeleteObject(hBrush);
-		
-			// Draw rounded border
-			HPEN hPen = CreatePen(PS_SOLID, 1, borderCol);
-			HPEN hOldPen = SelectObject(hdc, hPen);
-			HBRUSH hOldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-			RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 6, 6);  // 6,6 controls corner radius
-			SelectObject(hdc, hOldPen);
-			SelectObject(hdc, hOldBrush);
-			DeleteObject(hPen);
-		
-			// Draw text
-			char text[64] = "";
-			GetWindowTextA(dis->hwndItem, text, sizeof(text));
-			SetTextColor(hdc, textCol);
-			SetBkMode(hdc, TRANSPARENT);
-			DrawTextA(hdc, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-		
-			return TRUE;
-		}
-		
-	case WM_MOVING:
-		{
-			HWND hMain = (HWND)puGetAttribute(g_MainWin, PUA_WINDOW_HANDLE);
-			RECT rcMain;
-			GetWindowRect(hMain, &rcMain);
-		
-			RECT *rcDlg = (RECT*)lParam;
-			int dlgW = rcDlg->right - rcDlg->left;
-			int dlgH = rcDlg->bottom - rcDlg->top;
-		
-			rcDlg->left   = rcMain.right - 16;
-			rcDlg->top    = rcMain.top;
-			rcDlg->right  = rcMain.right - 16 + dlgW;
-			rcDlg->bottom = rcMain.top + dlgH;
-		
-			return TRUE;
-		}
-		
-	case WM_CLOSE:
-			DestroyWindow(hDlg);
-		return TRUE;
-
-    case WM_COMMAND:
-        {
-            WORD id = LOWORD(wParam);
-            // === Items tab buttons ===
-            if (id == IDC_BTN_ADD) {
-                ItemEditData data = {0};
-                data.limit = 1;
-                data.isAdd = 1;
-                if (ShowItemEditDialog(hDlg, &data, 1)) {
-                    char raw[512], display[1024];
-                    BuildItemString(raw, sizeof(raw), data.itemName, data.disabled, data.force, data.limit, data.exclude);
-                    FormatItemForDisplay(raw, display, sizeof(display));
-                    puDoMethod(g_ItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
-                    puDoMethod(g_ItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
-                    puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
-                    PopulateItemList(hItemList, g_ItemWatchList);
-                }
-            }
-            else if (id == IDC_BTN_REMOVE) {
-					// Items tab removal
-					if (currentTab == 0) {
-						int sel = ListView_GetNextItem(hItemList, -1, LVNI_SELECTED);
-						if (sel >= 0) {
-							PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-							for (int i = 0; i < sel && record; i++)
-								record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
-							if (record)
-								puDoMethod(g_ItemWatchList, PUM_TABLE_REMRECORD, record, 0);
-							PopulateItemList(hItemList, g_ItemWatchList);
-						}
-					}
-				}
-				else if (id == IDC_BTN_REMOVE_DISABLED) {
-					// Disabled tab removal
-					if (currentTab == 1) {
-						int sel = ListView_GetNextItem(hDisabledList, -1, LVNI_SELECTED);
-						if (sel >= 0) {
-							PUU32 record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-							for (int i = 0; i < sel && record; i++)
-								record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
-							if (record)
-								puDoMethod(g_DisabledItemWatchList, PUM_TABLE_REMRECORD, record, 0);
-							PopulateDisabledList(hDisabledList);
-						}
-					}
-				}
-            else if (id == IDC_BTN_EDIT) {
-						int sel = ListView_GetNextItem(hItemList, -1, LVNI_SELECTED);
-						if (sel < 0) {
-							MessageBox(hDlg, "No item selected.", "Edit", MB_OK);
-							break;
-						}
-						PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-						for (int i = 0; i < sel && record; i++)
-							record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
-						if (!record) break;
-						PUU8* oldStr = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
-						if (!oldStr) break;
-					
-						ItemEditData data;
-						memset(&data, 0, sizeof(data));
-					
-						const char *str = (const char*)oldStr;
-						// Check if the string looks like raw format (contains ';' or '^')
-						if (strchr(str, ';') || strchr(str, '^')) {
-							// Raw format: parse with ParseItemString
-							ParseItemString(str, data.itemName, sizeof(data.itemName),
-											&data.disabled, &data.force, &data.limit, data.exclude, sizeof(data.exclude));
-						} else {
-							// Formatted display: parse with ParseDisplayString
-							ParseDisplayString(str, data.itemName, sizeof(data.itemName),
-											&data.disabled, &data.force, &data.limit, data.exclude, sizeof(data.exclude));
-						}
-						data.isAdd = 0;
-					
-						if (ShowItemEditDialog(hDlg, &data, 0)) {
-							char raw[512], newDisplay[1024];
-							BuildItemString(raw, sizeof(raw), data.itemName, data.disabled, data.force, data.limit, data.exclude);
-							FormatItemForDisplay(raw, newDisplay, sizeof(newDisplay));
-							puSetAttribute(g_ItemWatchList, PUA_TABLE_CURRENTFIELD, 0);
-							puSetAttribute(g_ItemWatchList, PUA_TABLE_CURRENTRECORD, record);
-							puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)newDisplay, 0);
-							PopulateItemList(hItemList, g_ItemWatchList);
-						}
-					}
-            else if (id == IDC_BTN_DISABLE) {
-                int sel = ListView_GetNextItem(hItemList, -1, LVNI_SELECTED);
-                if (sel >= 0) {
-                    PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-                    for (int i = 0; i < sel && record; i++)
-                        record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
-                    if (record) {
-                        PUU8 *display = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
-                        if (display) {
-                            puDoMethod(g_DisabledItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
-                            puDoMethod(g_DisabledItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
-                            puDoMethod(g_DisabledItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
-                            puDoMethod(g_ItemWatchList, PUM_TABLE_REMRECORD, record, 0);
-                            PopulateItemList(hItemList, g_ItemWatchList);
-                            PopulateDisabledList(hDisabledList);
-                        }
-                    }
-                }
-            }
-            else if (id == IDC_BTN_ENABLE) {
-                int sel = ListView_GetNextItem(hDisabledList, -1, LVNI_SELECTED);
-                if (sel >= 0) {
-                    PUU32 record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-                    for (int i = 0; i < sel && record; i++)
-                        record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
-                    if (record) {
-                        PUU8 *display = (PUU8*)puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
-                        if (display) {
-                            puDoMethod(g_ItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
-                            puDoMethod(g_ItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
-                            puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
-                            puDoMethod(g_DisabledItemWatchList, PUM_TABLE_REMRECORD, record, 0);
-                            PopulateItemList(hItemList, g_ItemWatchList);
-                            PopulateDisabledList(hDisabledList);
-                        }
-                    }
-                }
-            }
-            else if (id == IDC_BTN_REMOVE_ALL) {
-                if (MessageBox(hDlg, "Remove ALL items from active list?", "Confirm", MB_YESNO | MB_ICONWARNING) == IDYES) {
-                    PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-                    while (record) {
-                        puDoMethod(g_ItemWatchList, PUM_TABLE_REMRECORD, record, 0);
-                        record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-                    }
-                    PopulateItemList(hItemList, g_ItemWatchList);
-                }
-            }
-            else if (id == IDC_BTN_REMOVE_ALL_DISABLED) {
-                if (MessageBox(hDlg, "Remove ALL items from disabled list?", "Confirm", MB_YESNO | MB_ICONWARNING) == IDYES) {
-                    PUU32 record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-                    while (record) {
-                        puDoMethod(g_DisabledItemWatchList, PUM_TABLE_REMRECORD, record, 0);
-                        record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-                    }
-                    PopulateDisabledList(hDisabledList);
-                }
-            }
-            else if (id == IDC_BTN_IMPORT) {
-                char filename[MAX_PATH];
-                if (GetFile(hDlg, FALSE, filename, sizeof(filename))) {
-                    int choice = MessageBox(hDlg, "Import Items:\nYes = Append\nNo = Replace\nCancel = Cancel",
-                                            "Import", MB_YESNOCANCEL | MB_ICONQUESTION);
-                    if (choice == IDYES) ImportItemsFromFile(filename, 0);
-                    else if (choice == IDNO) ImportItemsFromFile(filename, 1);
-                    PopulateItemList(hItemList, g_ItemWatchList);
-                }
-            }
-            else if (id == IDC_BTN_EXPORT) {
-                char filename[MAX_PATH];
-                if (GetFile(hDlg, TRUE, filename, sizeof(filename))) {
-                    ExportItemsOnly(filename);
-                    MessageBox(hDlg, "Export complete.", "Export", MB_OK);
-                }
-            }
-            else if (id == IDC_BTN_REMOVE_DUPLICATES) {
-                RemoveDuplicateItems();
-                PopulateItemList(hItemList, g_ItemWatchList);
-            }
-            // === Locations tab ===
-            else if (id == IDC_LOCATION_ADD) {
-                char loc[256] = "";
-                if (InputBox(hDlg, "Enter location name or coordinates:", loc, sizeof(loc))) {
-                    puDoMethod(g_LocWatchList, PUM_TABLE_NEWRECORD, 0, 0);
-                    puDoMethod(g_LocWatchList, PUM_TABLE_ADDRECORD, 0, 0);
-                    puDoMethod(g_LocWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)loc, 0);
-                    PopulateLocationList(hLocationList);
-					ListView_SetColumnWidth(hLocationList, 0, LVSCW_AUTOSIZE_USEHEADER);
-                }
-            }
-            else if (id == IDC_LOCATION_REMOVE) {
-                int sel = ListView_GetNextItem(hLocationList, -1, LVNI_SELECTED);
-                if (sel >= 0) {
-                    PUU32 record = puDoMethod(g_LocWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-                    for (int i = 0; i < sel && record; i++)
-                        record = puDoMethod(g_LocWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
-                    if (record)
-                        puDoMethod(g_LocWatchList, PUM_TABLE_REMRECORD, record, 0);
-                    PopulateLocationList(hLocationList);
-                }
-            }
-            // === Mission Types checkboxes ===
-            else if (id == IDC_TYPE_REPAIR || id == IDC_TYPE_RETURN || id == IDC_TYPE_FINDP ||
-                     id == IDC_TYPE_FINDI || id == IDC_TYPE_ASS) {
-                int checked = (IsDlgButtonChecked(hDlg, id) == BST_CHECKED);
-                switch (id) {
-                    case IDC_TYPE_REPAIR: PUL_SET_CB(CS_TYPEREPAIR_CB, checked); break;
-                    case IDC_TYPE_RETURN: PUL_SET_CB(CS_TYPERETURN_CB, checked); break;
-                    case IDC_TYPE_FINDP:  PUL_SET_CB(CS_TYPEFINDP_CB, checked); break;
-                    case IDC_TYPE_FINDI:  PUL_SET_CB(CS_TYPEFINDI_CB, checked); break;
-                    case IDC_TYPE_ASS:    PUL_SET_CB(CS_TYPEASS_CB, checked); break;
-                }
-            }
-            // === Item Values tab ===
-            else if (id == IDC_VALUE_BUYMOD) {
-                if (HIWORD(wParam) == EN_CHANGE) {
-                    char buf[16];
-                    GetDlgItemTextA(hDlg, IDC_VALUE_BUYMOD, buf, sizeof(buf));
-                    int val = atoi(buf);
-                    puSetAttribute(puGetObjectFromCollection(g_pCol, CS_ITEMVALUE_BUYMOD), PUA_TEXTENTRY_VALUE, val);
-                }
-            }
-            else if (id == IDC_VALUE_SINGLE_ENABLE) {
-                PUL_SET_CB(CS_ITEMVALUE_MSINGLE, IsDlgButtonChecked(hDlg, id) == BST_CHECKED);
-            }
-            else if (id == IDC_VALUE_SINGLE_EDIT && HIWORD(wParam) == EN_CHANGE) {
-                char buf[32];
-                GetDlgItemTextA(hDlg, IDC_VALUE_SINGLE_EDIT, buf, sizeof(buf));
-                int val = atoi(buf);
-                puSetAttribute(puGetObjectFromCollection(g_pCol, CS_ITEMVALUE_SINGLE), PUA_TEXTENTRY_VALUE, val);
-            }
-            else if (id == IDC_VALUE_TOTAL_ENABLE) {
-                PUL_SET_CB(CS_ITEMVALUE_MTOTAL, IsDlgButtonChecked(hDlg, id) == BST_CHECKED);
-            }
-            else if (id == IDC_VALUE_TOTAL_EDIT && HIWORD(wParam) == EN_CHANGE) {
-                char buf[32];
-                GetDlgItemTextA(hDlg, IDC_VALUE_TOTAL_EDIT, buf, sizeof(buf));
-                int val = atoi(buf);
-                puSetAttribute(puGetObjectFromCollection(g_pCol, CS_ITEMVALUE_TOTAL), PUA_TEXTENTRY_VALUE, val);
-            }
-            // === Sliders tab ===
-            else if (id == IDC_SLIDER_EASY_HARD && HIWORD(wParam) == EN_CHANGE) {
-                int val = GetDlgItemInt(hDlg, IDC_SLIDER_EASY_HARD, NULL, FALSE);
-                puSetAttribute(puGetObjectFromCollection(g_pCol, CS_SLIDER_EASY_HARD), PUA_TEXTENTRY_VALUE, val);
-            }
-            else if (id == IDC_SLIDER_GOOD_BAD && HIWORD(wParam) == EN_CHANGE) {
-                int val = GetDlgItemInt(hDlg, IDC_SLIDER_GOOD_BAD, NULL, FALSE);
-                puSetAttribute(puGetObjectFromCollection(g_pCol, CS_SLIDER_GOOD_BAD), PUA_TEXTENTRY_VALUE, val);
-            }
-            else if (id == IDC_SLIDER_ORDER_CHAOS && HIWORD(wParam) == EN_CHANGE) {
-                int val = GetDlgItemInt(hDlg, IDC_SLIDER_ORDER_CHAOS, NULL, FALSE);
-                puSetAttribute(puGetObjectFromCollection(g_pCol, CS_SLIDER_ORDER_CHAOS), PUA_TEXTENTRY_VALUE, val);
-            }
-            else if (id == IDC_SLIDER_OPEN_HIDDEN && HIWORD(wParam) == EN_CHANGE) {
-                int val = GetDlgItemInt(hDlg, IDC_SLIDER_OPEN_HIDDEN, NULL, FALSE);
-                puSetAttribute(puGetObjectFromCollection(g_pCol, CS_SLIDER_OPEN_HIDDEN), PUA_TEXTENTRY_VALUE, val);
-            }
-            else if (id == IDC_SLIDER_PHYS_MYST && HIWORD(wParam) == EN_CHANGE) {
-                int val = GetDlgItemInt(hDlg, IDC_SLIDER_PHYS_MYST, NULL, FALSE);
-                puSetAttribute(puGetObjectFromCollection(g_pCol, CS_SLIDER_PHYS_MYST), PUA_TEXTENTRY_VALUE, val);
-            }
-            else if (id == IDC_SLIDER_HEADON_STEALTH && HIWORD(wParam) == EN_CHANGE) {
-                int val = GetDlgItemInt(hDlg, IDC_SLIDER_HEADON_STEALTH, NULL, FALSE);
-                puSetAttribute(puGetObjectFromCollection(g_pCol, CS_SLIDER_HEADON_STEALTH), PUA_TEXTENTRY_VALUE, val);
-            }
-            else if (id == IDC_SLIDER_MONEY_XP && HIWORD(wParam) == EN_CHANGE) {
-                int val = GetDlgItemInt(hDlg, IDC_SLIDER_MONEY_XP, NULL, FALSE);
-                puSetAttribute(puGetObjectFromCollection(g_pCol, CS_SLIDER_MONEY_XP), PUA_TEXTENTRY_VALUE, val);
-            }
-            else if (id == IDC_BTN_SET_SLIDERS) {
-                int easy_hard = GetDlgItemInt(hDlg, IDC_SLIDER_EASY_HARD, NULL, FALSE);
-                int good_bad = GetDlgItemInt(hDlg, IDC_SLIDER_GOOD_BAD, NULL, FALSE);
-                int order_chaos = GetDlgItemInt(hDlg, IDC_SLIDER_ORDER_CHAOS, NULL, FALSE);
-                int open_hidden = GetDlgItemInt(hDlg, IDC_SLIDER_OPEN_HIDDEN, NULL, FALSE);
-                int phys_myst = GetDlgItemInt(hDlg, IDC_SLIDER_PHYS_MYST, NULL, FALSE);
-                int headon_stealth = GetDlgItemInt(hDlg, IDC_SLIDER_HEADON_STEALTH, NULL, FALSE);
-                int money_xp = GetDlgItemInt(hDlg, IDC_SLIDER_MONEY_XP, NULL, FALSE);
-                _setSliders(easy_hard, good_bad, order_chaos, open_hidden, phys_myst, headon_stealth, money_xp);
-            }
-			  // === New checkboxes for Match and Highlight ===
-			else if (id == IDC_ITEM_MATCH_CB) {
-				PUL_SET_CB(CS_ALERTITEM_CB, IsDlgButtonChecked(hDlg, IDC_ITEM_MATCH_CB) == BST_CHECKED);
-			}
-			else if (id == IDC_ITEM_HIGHLIGHT_CB) {
-				PUL_SET_CB(CS_HIGHLIGHTITEM_CB, IsDlgButtonChecked(hDlg, IDC_ITEM_HIGHLIGHT_CB) == BST_CHECKED);
-			}
-			else if (id == IDC_LOC_MATCH_CB) {
-				PUL_SET_CB(CS_ALERTLOC_CB, IsDlgButtonChecked(hDlg, IDC_LOC_MATCH_CB) == BST_CHECKED);
-			}
-			else if (id == IDC_LOC_HIGHLIGHT_CB) {
-				PUL_SET_CB(CS_HIGHLIGHTLOC_CB, IsDlgButtonChecked(hDlg, IDC_LOC_HIGHLIGHT_CB) == BST_CHECKED);
-			}
-			else if (id == IDC_TYPE_MATCH_CB) {
-				PUL_SET_CB(CS_ALERTTYPE_CB, IsDlgButtonChecked(hDlg, IDC_TYPE_MATCH_CB) == BST_CHECKED);
-			}
-			else if (id == IDC_TYPE_HIGHLIGHT_CB) {
-				PUL_SET_CB(CS_HIGHLIGHTTYPE_CB, IsDlgButtonChecked(hDlg, IDC_TYPE_HIGHLIGHT_CB) == BST_CHECKED);
-			}
-			else if (id == IDC_VALUE_HIGHLIGHT_CB) {
-				PUL_SET_CB(CS_HIGHLIGHTTYPE_CB, IsDlgButtonChecked(hDlg, IDC_VALUE_HIGHLIGHT_CB) == BST_CHECKED);
-			}
-        }
-        break;
-
-    case WM_DESTROY:
-        g_hHiddenTabsWnd = NULL;
-        break;
-    }
-    return FALSE;
-}
-
-// ========== Helper: ShowModalMessage (used by multiple places) ==========
-static int ShowModalMessage(HWND hParent, const char* text, const char* caption, UINT type)
-{
-    if (!hParent && g_MainWin)
-        hParent = (HWND)puGetAttribute(g_MainWin, PUA_WINDOW_HANDLE);
-    BOOL wasTopmost = FALSE;
-    if (hParent) {
-        LONG exStyle = GetWindowLong(hParent, GWL_EXSTYLE);
-        if (exStyle & WS_EX_TOPMOST) {
-            wasTopmost = TRUE;
-            SetWindowPos(hParent, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-        }
-    }
-    int result = MessageBox(hParent, text, caption, type | MB_SYSTEMMODAL);
-    if (wasTopmost && hParent) {
-        SetWindowPos(hParent, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-    }
-    return result;
-}
-
-// ========== TIMER BASED BUYING AGENT (declarations) ==========
-#define TIMER_BUYINGAGENT 1
-static UINT_PTR g_TimerID = 0;
-static int g_PendingAttemptNumber = 0;
-
-// ========== FORWARD DECLARATIONS FOR MATCH LIST AND OTHER DIALOGS ==========
-typedef struct {
-    const char **matches;
-    int count;
-    char selected[256];
-    char originalSearch[256];
-    char excludeWords[256];
-} MatchListData;
-
+// ========== ADDED FOR QUANTITY LIMITS ==========
 typedef struct ItemCounter {
     char *itemName;
     int limit;
@@ -1331,16 +1143,215 @@ typedef struct ItemCounter {
     struct ItemCounter *next;
 } ItemCounter;
 
-ItemCounter *g_ItemCounters = NULL;
+static ItemCounter *g_ItemCounters = NULL;
 
-static INT_PTR CALLBACK MatchListDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam);
-static INT_PTR CALLBACK ItemEditDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam);
-static INT_PTR CALLBACK MassAddDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam);
+ItemCounter* FindItemCounter(const char *name) {
+    ItemCounter *cur = g_ItemCounters;
+    while (cur) {
+        if (strcmp(cur->itemName, name) == 0) return cur;
+        cur = cur->next;
+    }
+    return NULL;
+}
 
-// Forward declaration for the subclass procedure
-LRESULT CALLBACK MainWndProcHook(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData);
-static LRESULT CALLBACK BAWndProcHook(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData);
+void AddItemCounter(const char *name, int limit) {
+    if (limit <= 0) return;
+    ItemCounter *new = (ItemCounter*)malloc(sizeof(ItemCounter));
+    new->itemName = _strdup(name);
+    new->limit = limit;
+    new->accepted = 0;
+    new->next = g_ItemCounters;
+    g_ItemCounters = new;
+}
 
+static void ClearItemCounters() {
+    // Never clear counters while a buying session is active
+    if (g_bBuyingAgentActive) {
+        return;
+    }
+    // Additional guard: if we still have tries or missions pending, don't clear
+    if (g_BuyingAgentCount > 0 || g_BuyingAgentMissions > 0) {
+        return;
+    }
+
+    ItemCounter *cur = g_ItemCounters;
+    while (cur) {
+        ItemCounter *next = cur->next;
+        free(cur->itemName);
+        free(cur);
+        cur = next;
+    }
+    g_ItemCounters = NULL;
+}
+// ===============================================
+
+typedef enum ImportSettingsMode
+{
+    ISM_CONFIG,
+    ISM_LOCWATCH,
+    ISM_ITEMWATCH,
+	ISM_DISABLED_ITEMWATCH,
+    ISM_SLIDERS,
+    ISM_DONE,
+} ImportSettingsMode;
+
+int OpenLocalDB()
+{
+	char DBPath[MAX_PATH];
+	sprintf(DBPath, "%s\\cd_image\\rdb.db", g_AODir);
+
+	// 1. Open SQLite handle
+if (sqlite3_open_v2(DBPath, &g_pSQLite, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+    // This will succeed even if AO is running
+    return FALSE;
+}
+
+
+	// 2. Pre-prepare statements for the 3 specific tables
+	sqlite3_prepare_v2(g_pSQLite, "SELECT data FROM rdb_1000020 WHERE id = ?;", -1, &g_stmtItem, NULL);
+	sqlite3_prepare_v2(g_pSQLite, "SELECT data FROM rdb_1010008 WHERE id = ?;", -1, &g_stmtIcon, NULL);
+	sqlite3_prepare_v2(g_pSQLite, "SELECT data FROM rdb_1000001 WHERE id = ?;", -1, &g_stmtPF, NULL);
+
+	return TRUE;
+}
+
+void* GetDataChunk(PUU32 _KeyHi, PUU32 _KeyLo, PUU32* _pSize)
+{
+	sqlite3_stmt* pStmt = NULL;
+	void* pReturnData = NULL;
+
+	// 1. Select the correct prepared statement
+	// Tables: Items (1000020), Icons (1010008), Playfields (1000001)
+	switch (_KeyHi) {
+	case AODB_TYP_ITEM: pStmt = g_stmtItem; break;
+	case AODB_TYP_ICON: pStmt = g_stmtIcon; break;
+	case AODB_TYP_PF:   pStmt = g_stmtPF;   break;
+	default: return NULL;
+	}
+
+	if (!pStmt) return NULL;
+
+	// 2. Reset and Bind Key
+	sqlite3_reset(pStmt);
+	// Use _KeyLo directly as an integer. SQLite handles the byte order.
+	sqlite3_bind_int(pStmt, 1, (int)_KeyLo);
+
+	// 3. Execute
+	if (sqlite3_step(pStmt) == SQLITE_ROW) {
+		const unsigned char* blob = (const unsigned char*)sqlite3_column_blob(pStmt, 0);
+		int blobSize = sqlite3_column_bytes(pStmt, 0);
+
+		if (!blob || blobSize <= 0) return NULL;
+
+		// --- TYPE 1: ITEMS (Parse into MissionItem struct) ---
+		if (_KeyHi == AODB_TYP_ITEM) {
+			MissionItem* pItem = (MissionItem*)malloc(sizeof(MissionItem));
+			if (!pItem) return NULL;
+			memset(pItem, 0, sizeof(MissionItem));
+
+			// Scan tags for QL, Icon, and Value
+			for (int i = 4; i + 8 <= blobSize; i += 8) {
+				PUU32 tag = *(PUU32*)(blob + i);
+				PUU32 val = *(PUU32*)(blob + i + 4);
+				switch (tag) {
+				case 0x36: pItem->QL = val; break;
+				case 0x4F: pItem->IconKey = val; break;
+				case 0x4A: pItem->Value = val; break;
+				}
+			}
+
+			// Find Name Signature: 15 00 00 00 21 00 00 00
+			for (int i = 0; i + 12 <= blobSize; i++) {
+				if (*(PUU32*)(blob + i) == 0x15 && *(PUU32*)(blob + i + 4) == 0x21) {
+					unsigned short nameLen = *(unsigned short*)(blob + i + 8);
+					if (nameLen > AODB_MAX_NAME_LEN) nameLen = AODB_MAX_NAME_LEN;
+					memcpy(pItem->pName, blob + i + 12, nameLen);
+					pItem->pName[nameLen] = 0;
+					break;
+				}
+			}
+
+			pReturnData = pItem;
+			if (_pSize) *_pSize = sizeof(MissionItem);
+		}
+
+		// --- TYPE 2: PLAYFIELDS (Skip 8-byte header) ---
+		else if (_KeyHi == AODB_TYP_PF) {
+			if (blobSize > 8) {
+				const char* strData = (const char*)(blob + 8);
+				int finalSize = (int)(strlen(strData) + 1);
+				pReturnData = malloc(finalSize);
+				if (pReturnData) {
+					memcpy(pReturnData, strData, finalSize);
+					if (_pSize) *_pSize = (PUU32)finalSize;
+				}
+			}
+		}
+
+		// --- TYPE 3: ICONS (Return raw PNG) ---
+		else {
+			pReturnData = malloc(blobSize);
+			if (pReturnData) {
+				memcpy(pReturnData, blob, blobSize);
+				if (_pSize) *_pSize = (PUU32)blobSize;
+			}
+		}
+	}
+
+	return pReturnData;
+}
+
+static int HasActiveWatchlistItems()
+{
+    PUU32 Record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+    while (Record)
+    {
+        PUU8* pString = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, Record, 0);
+        if (pString && *pString)
+        {
+            char itemName[256];
+            int disabled = 0, force = 0, limit = 0;
+            char exclude[256];
+            ParseDisplayString((char*)pString, itemName, sizeof(itemName),
+                               &disabled, &force, &limit, exclude, sizeof(exclude));
+            // Note: 'disabled' flag is now only set if the raw string contains '#'
+            // But since we separate physically, we ignore it here. Keep the limit logic.
+            if (limit == 0)
+                return TRUE;    // unlimited active item
+            else
+            {
+                ItemCounter *ic = FindItemCounter(itemName);
+                if (!ic || ic->accepted < ic->limit)
+                    return TRUE;
+            }
+        }
+        Record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, Record, 0);
+    }
+    return FALSE;
+}
+
+// ========== WINDOW SUBCLASS FOR TIMER HANDLING ==========
+LRESULT CALLBACK MainWndProcHook( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData )
+{
+    if (uMsg == WM_TIMER && wParam == TIMER_BUYINGAGENT)
+    {
+        // Timer expired – kill it and post an application message to the main loop
+        KillTimer( hWnd, TIMER_BUYINGAGENT );
+        g_TimerID = 0;
+        puPostAppMessage( CSAM_BUYINGAGENT_TIMER, 0);
+        return 0;
+    }
+    return DefSubclassProc( hWnd, uMsg, wParam, lParam );
+}
+// ========================================================
+
+void ReleaseAODatabase(void)
+{
+	if (g_stmtItem) sqlite3_finalize(g_stmtItem);
+	if (g_stmtIcon) sqlite3_finalize(g_stmtIcon);
+	if (g_stmtPF)   sqlite3_finalize(g_stmtPF);
+	if (g_pSQLite)  sqlite3_close(g_pSQLite);
+}
 
 int main( int argc, char** argv )
 {
@@ -1357,9 +1368,6 @@ int main( int argc, char** argv )
     // Set main thread of clicksaver on a priority above normal
     // Helps a lot. Refreshing of missions infos is much faster.
     SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL );
-	
-	INITCOMMONCONTROLSEX icc = { sizeof(INITCOMMONCONTROLSEX), ICC_WIN95_CLASSES };
-	InitCommonControlsEx(&icc);
 
     // Initialise PUL
     if( !puInit() )
@@ -1512,37 +1520,6 @@ if (!LoadItemNameCache(cachePath)) {
 
         switch( pAppMsg->Message )
         {
-			
-		case CSAM_SHOW_HIDDEN_TABS:
-			if (!g_hHiddenTabsWnd || !IsWindow(g_hHiddenTabsWnd)) {
-				g_hHiddenTabsWnd = CreateDialog(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_HIDDEN_TABS),
-												(HWND)puGetAttribute(g_MainWin, PUA_WINDOW_HANDLE),
-												HiddenTabsDlgProc);
-			}
-		
-			if (IsWindowVisible(g_hHiddenTabsWnd)) {
-				ShowWindow(g_hHiddenTabsWnd, SW_HIDE);
-			}
-			else {
-				// Always reposition before showing
-				HWND hMain = (HWND)puGetAttribute(g_MainWin, PUA_WINDOW_HANDLE);
-				RECT rcMain;
-				GetWindowRect(hMain, &rcMain);
-				RECT rcDlg;
-				GetWindowRect(g_hHiddenTabsWnd, &rcDlg);
-				int dlgW = rcDlg.right - rcDlg.left;
-				int dlgH = rcDlg.bottom - rcDlg.top;
-				SetWindowPos(g_hHiddenTabsWnd, NULL,
-					rcMain.right - 16,
-					rcMain.top,
-					dlgW, dlgH,
-					SWP_NOZORDER | SWP_NOSIZE);
-		
-				ShowWindow(g_hHiddenTabsWnd, SW_SHOW);
-				SetForegroundWindow(g_hHiddenTabsWnd);
-			}
-			break;
-			
 		case CSAM_EDIT_ITEM:
 			{
 				// Get selected row
@@ -2216,881 +2193,6 @@ if (!LoadItemNameCache(cachePath)) {
     return 0;
 }
 
-void* GetDataChunk(PUU32 _KeyHi, PUU32 _KeyLo, PUU32* _pSize)
-{
-    sqlite3_stmt* pStmt = NULL;
-    void* pReturnData = NULL;
-
-    switch (_KeyHi) {
-        case AODB_TYP_ITEM: pStmt = g_stmtItem; break;
-        case AODB_TYP_ICON: pStmt = g_stmtIcon; break;
-        case AODB_TYP_PF:   pStmt = g_stmtPF;   break;
-        default: return NULL;
-    }
-    if (!pStmt) return NULL;
-
-    sqlite3_reset(pStmt);
-    sqlite3_bind_int(pStmt, 1, (int)_KeyLo);
-
-    if (sqlite3_step(pStmt) == SQLITE_ROW) {
-        const unsigned char* blob = (const unsigned char*)sqlite3_column_blob(pStmt, 0);
-        int blobSize = sqlite3_column_bytes(pStmt, 0);
-        if (!blob || blobSize <= 0) return NULL;
-
-        if (_KeyHi == AODB_TYP_ITEM) {
-            MissionItem* pItem = (MissionItem*)malloc(sizeof(MissionItem));
-            if (!pItem) return NULL;
-            memset(pItem, 0, sizeof(MissionItem));
-            for (int i = 4; i + 8 <= blobSize; i += 8) {
-                PUU32 tag = *(PUU32*)(blob + i);
-                PUU32 val = *(PUU32*)(blob + i + 4);
-                switch (tag) {
-                    case 0x36: pItem->QL = val; break;
-                    case 0x4F: pItem->IconKey = val; break;
-                    case 0x4A: pItem->Value = val; break;
-                }
-            }
-            for (int i = 0; i + 12 <= blobSize; i++) {
-                if (*(PUU32*)(blob + i) == 0x15 && *(PUU32*)(blob + i + 4) == 0x21) {
-                    unsigned short nameLen = *(unsigned short*)(blob + i + 8);
-                    if (nameLen > AODB_MAX_NAME_LEN) nameLen = AODB_MAX_NAME_LEN;
-                    memcpy(pItem->pName, blob + i + 12, nameLen);
-                    pItem->pName[nameLen] = 0;
-                    break;
-                }
-            }
-            pReturnData = pItem;
-            if (_pSize) *_pSize = sizeof(MissionItem);
-        }
-        else if (_KeyHi == AODB_TYP_PF) {
-            if (blobSize > 8) {
-                const char* strData = (const char*)(blob + 8);
-                int finalSize = (int)(strlen(strData) + 1);
-                pReturnData = malloc(finalSize);
-                if (pReturnData) {
-                    memcpy(pReturnData, strData, finalSize);
-                    if (_pSize) *_pSize = (PUU32)finalSize;
-                }
-            }
-        }
-        else {
-            pReturnData = malloc(blobSize);
-            if (pReturnData) {
-                memcpy(pReturnData, blob, blobSize);
-                if (_pSize) *_pSize = (PUU32)blobSize;
-            }
-        }
-    }
-    return pReturnData;
-}
-
-int OpenLocalDB()
-{
-    char DBPath[MAX_PATH];
-    sprintf(DBPath, "%s\\cd_image\\rdb.db", g_AODir);
-    if (sqlite3_open_v2(DBPath, &g_pSQLite, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-        return FALSE;
-    sqlite3_prepare_v2(g_pSQLite, "SELECT data FROM rdb_1000020 WHERE id = ?;", -1, &g_stmtItem, NULL);
-    sqlite3_prepare_v2(g_pSQLite, "SELECT data FROM rdb_1010008 WHERE id = ?;", -1, &g_stmtIcon, NULL);
-    sqlite3_prepare_v2(g_pSQLite, "SELECT data FROM rdb_1000001 WHERE id = ?;", -1, &g_stmtPF, NULL);
-    return TRUE;
-}
-
-void ReleaseAODatabase()
-{
-    if (g_stmtItem) sqlite3_finalize(g_stmtItem);
-    if (g_stmtIcon) sqlite3_finalize(g_stmtIcon);
-    if (g_stmtPF)   sqlite3_finalize(g_stmtPF);
-    if (g_pSQLite)  sqlite3_close(g_pSQLite);
-}
-
-static void RemoveDuplicateItems(void)
-{
-    // We'll build a hash set of display strings, keeping first occurrence.
-    // Simple O(n^2) for small lists is fine; if list large, use temporary array.
-    PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-    PUU32 prevRecord = 0;
-    int removed = 0;
-
-    // First pass: collect unique display strings
-    char **unique = NULL;
-    int uniqueCount = 0;
-    record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-    while (record) {
-        PUU8 *display = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
-        if (display) {
-            int already = 0;
-            for (int i = 0; i < uniqueCount; i++) {
-                if (strcmp(unique[i], (char*)display) == 0) {
-                    already = 1;
-                    break;
-                }
-            }
-            if (!already) {
-                unique = realloc(unique, (uniqueCount + 1) * sizeof(char*));
-                unique[uniqueCount] = _strdup((char*)display);
-                uniqueCount++;
-            } else {
-                removed++;
-            }
-        }
-        record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
-    }
-
-    if (removed == 0) {
-        free(unique);
-        ShowModalMessage(NULL, "No duplicate items found.", "Remove Duplicates", MB_OK);
-        return;
-    }
-
-    // Rebuild the table from unique list
-    // Clear table
-    record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-    while (record) {
-        puDoMethod(g_ItemWatchList, PUM_TABLE_REMRECORD, record, 0);
-        record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-    }
-    for (int i = 0; i < uniqueCount; i++) {
-        puDoMethod(g_ItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
-        puDoMethod(g_ItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
-        puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)unique[i], 0);
-        free(unique[i]);
-    }
-    free(unique);
-
-    // Refresh listview
-    PUU32 listView = puGetObjectFromCollection(g_pCol, CS_ITEMWATCH_LISTVIEW);
-    puSetAttribute(listView, PUA_LISTVIEW_SELECTED, -1);
-
-    char msg[64];
-    sprintf(msg, "Removed %d duplicate entries.", removed);
-    ShowModalMessage(NULL, msg, "Remove Duplicates", MB_OK);
-}
-
-static void MoveCurrentActiveToDisabled(void)
-{
-    PUU32 listView = puGetObjectFromCollection(g_pCol, CS_ITEMWATCH_LISTVIEW);
-    int selectedIndex = (int)puGetAttribute(listView, PUA_LISTVIEW_SELECTED);
-    if (selectedIndex < 0) {
-        ShowModalMessage(NULL, "No item selected.", "ClickSaver", MB_OK | MB_ICONINFORMATION);
-        return;
-    }
-
-    PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-    for (int i = 0; i < selectedIndex && record; i++)
-        record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
-    if (!record) {
-        ShowModalMessage(NULL, "No item selected or could not find the selected record.", "ClickSaver", MB_OK | MB_ICONWARNING);
-        return;
-    }
-
-    PUU8 *display = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
-    if (!display || !*display) return;
-
-    puDoMethod(g_DisabledItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
-    puDoMethod(g_DisabledItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
-    puDoMethod(g_DisabledItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
-
-    puDoMethod(listView, PUM_LISTVIEW_REMOVE, 0, 0);
-
-    int maxRows = (int)puGetAttribute(listView, PUA_LISTVIEW_SELECTED);
-    if (maxRows == -1) {
-        puSetAttribute(listView, PUA_LISTVIEW_SELECTED, -1);
-        return;
-    }
-    int newIndex = selectedIndex;
-    if (newIndex >= maxRows) newIndex = maxRows - 1;
-    puSetAttribute(listView, PUA_LISTVIEW_SELECTED, newIndex);
-}
-
-static void MoveCurrentDisabledToActive(void)
-{
-    PUU32 listView = puGetObjectFromCollection(g_pCol, CS_DISABLED_ITEMWATCH_LISTVIEW);
-    int selectedIndex = (int)puGetAttribute(listView, PUA_LISTVIEW_SELECTED);
-    if (selectedIndex < 0) {
-        ShowModalMessage(NULL, "No item selected in disabled list.", "ClickSaver", MB_OK | MB_ICONINFORMATION);
-        return;
-    }
-
-    PUU32 record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-    for (int i = 0; i < selectedIndex && record; i++)
-        record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
-    if (!record) {
-        ShowModalMessage(NULL, "No item selected or could not find the selected disabled record.", "ClickSaver", MB_OK | MB_ICONWARNING);
-        return;
-    }
-
-    PUU8 *display = (PUU8*)puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
-    if (!display || !*display) return;
-
-    puDoMethod(g_ItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
-    puDoMethod(g_ItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
-    puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
-
-    puDoMethod(listView, PUM_LISTVIEW_REMOVE, 0, 0);
-
-    int maxRows = (int)puGetAttribute(listView, PUA_LISTVIEW_SELECTED);
-    if (maxRows == -1) {
-        puSetAttribute(listView, PUA_LISTVIEW_SELECTED, -1);
-        return;
-    }
-    int newIndex = selectedIndex;
-    if (newIndex >= maxRows) newIndex = maxRows - 1;
-    puSetAttribute(listView, PUA_LISTVIEW_SELECTED, newIndex);
-}
-
-static int ItemExistsInActiveList(const char *displayString)
-{
-    PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-    while (record) {
-        PUU8 *existing = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
-        if (existing && strcmp((char*)existing, displayString) == 0)
-            return 1;
-        record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
-    }
-    return 0;
-}
-
-static void ImportItemsFromFile(const char *filename, int replaceMode)
-{
-    if (replaceMode) {
-        if (ShowModalMessage(NULL, "Replace will delete all current items. Continue?",
-                             "Confirm Replace", MB_YESNO) != IDYES)
-            return;
-        PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-        while (record) {
-            puDoMethod(g_ItemWatchList, PUM_TABLE_REMRECORD, record, 0);
-            record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-        }
-        PUU32 listView = puGetObjectFromCollection(g_pCol, CS_ITEMWATCH_LISTVIEW);
-        puSetAttribute(listView, PUA_LISTVIEW_SELECTED, -1);
-    }
-
-    FILE *fp = fopen(filename, "r");
-    if (!fp) {
-        DisplayErrorMessage("Cannot open file.", TRUE);
-        return;
-    }
-
-    char line[1024];
-    int inItemSection = 0;
-    int addedCount = 0;
-    int duplicateCount = 0;
-
-    while (fgets(line, sizeof(line), fp)) {
-        line[strcspn(line, "\r\n")] = 0;
-        if (strcmp(line, "::ItemWatch::") == 0) {
-            inItemSection = 1;
-            continue;
-        }
-        if (strcmp(line, "::END::") == 0 || strncmp(line, "::", 2) == 0)
-            break;
-        if (!inItemSection) continue;
-        if (strlen(line) == 0) continue;
-
-        char display[1024];
-        MakeTableEntry(display, sizeof(display), line);
-        if (!replaceMode && ItemExistsInActiveList(display)) {
-            duplicateCount++;
-            continue;
-        }
-
-        puDoMethod(g_ItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
-        puDoMethod(g_ItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
-        puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
-        addedCount++;
-    }
-    fclose(fp);
-
-    char msg[256];
-    sprintf(msg, "Imported %d items. Duplicates skipped: %d", addedCount, duplicateCount);
-    ShowModalMessage(NULL, msg, "Import Complete", MB_OK);
-}
-
-static void ExportItemsOnly(const char *filename)
-{
-    char fullpath[MAX_PATH];
-    strcpy(fullpath, filename);
-    size_t len = strlen(fullpath);
-    if (len < 3 || _stricmp(fullpath + len - 3, ".cs") != 0)
-        strcat(fullpath, ".cs");
-
-    FILE *fp = fopen(fullpath, "w");
-    if (!fp) {
-        char err[256];
-        sprintf(err, "Cannot create file:\n%s", fullpath);
-        DisplayErrorMessage(err, TRUE);
-        return;
-    }
-
-    fprintf(fp, "::ItemWatch::\n");
-    PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-    while (record) {
-        PUU8 *display = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
-        if (display && *display) {
-            char itemName[256] = {0}, exclude[256] = {0};
-            int disabled = 0, force = 0, limit = 0;
-            ParseDisplayString((char*)display, itemName, sizeof(itemName),
-                               &disabled, &force, &limit, exclude, sizeof(exclude));
-            char raw[512];
-            BuildItemString(raw, sizeof(raw), itemName, disabled, force, limit, exclude);
-            fprintf(fp, "%s\n", raw);
-        }
-        record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
-    }
-    fprintf(fp, "::END::\n");
-    fclose(fp);
-}
-
-ItemCounter* FindItemCounter(const char *name)
-{
-    ItemCounter *cur = g_ItemCounters;
-    while (cur) {
-        if (strcmp(cur->itemName, name) == 0) return cur;
-        cur = cur->next;
-    }
-    return NULL;
-}
-
-void AddItemCounter(const char *name, int limit)
-{
-    if (limit <= 0) return;
-    ItemCounter *new_item = (ItemCounter*)malloc(sizeof(ItemCounter));
-    new_item->itemName = _strdup(name);
-    new_item->limit = limit;
-    new_item->accepted = 0;
-    new_item->next = g_ItemCounters;
-    g_ItemCounters = new_item;
-}
-
-void ClearItemCounters(void)
-{
-    if (g_bBuyingAgentActive) return;
-    if (g_BuyingAgentCount > 0 || g_BuyingAgentMissions > 0) return;
-    ItemCounter *cur = g_ItemCounters;
-    while (cur) {
-        ItemCounter *next = cur->next;
-        free(cur->itemName);
-        free(cur);
-        cur = next;
-    }
-    g_ItemCounters = NULL;
-}
-
-static int HasActiveWatchlistItems(void)
-{
-    PUU32 Record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-    while (Record) {
-        PUU8* pString = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, Record, 0);
-        if (pString && *pString) {
-            char itemName[256];
-            int disabled = 0, force = 0, limit = 0;
-            char exclude[256];
-            ParseDisplayString((char*)pString, itemName, sizeof(itemName),
-                               &disabled, &force, &limit, exclude, sizeof(exclude));
-            if (limit == 0)
-                return 1;
-            else {
-                ItemCounter *ic = FindItemCounter(itemName);
-                if (!ic || ic->accepted < ic->limit)
-                    return 1;
-            }
-        }
-        Record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, Record, 0);
-    }
-    return 0;
-}
-
-
-static INT_PTR CALLBACK MatchListDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-    MatchListData *pData = (MatchListData*)GetWindowLongPtr(hDlg, DWLP_USER);
-
-    switch (msg) {
-    case WM_INITDIALOG:
-        pData = (MatchListData*)lParam;
-        SetWindowLongPtr(hDlg, DWLP_USER, (LONG_PTR)pData);
-        HWND hList = GetDlgItem(hDlg, IDC_MATCH_LIST);
-        for (int i = 0; i < pData->count; i++)
-            SendMessageA(hList, LB_ADDSTRING, 0, (LPARAM)pData->matches[i]);
-        char hint[512];
-        if (pData->excludeWords[0] != '\0') {
-            sprintf(hint, "Hint: Double click an item to select it.\n\nUsing \"%s\" with exclusions (%s) matches %d item(s).",
-                    pData->originalSearch, pData->excludeWords, pData->count);
-        } else {
-            sprintf(hint, "Hint: Double click an item to select it.\n\nUsing \"%s\" matches %d item(s).",
-                    pData->originalSearch, pData->count);
-        }
-        SetDlgItemTextA(hDlg, IDC_MATCH_HINT, hint);
-        SetFocus(GetDlgItem(hDlg, IDC_MATCH_EDIT));
-        return FALSE;
-
-    case WM_COMMAND:
-        if (LOWORD(wParam) == IDC_USE_ORIGINAL) {
-            pData->selected[0] = '\0';
-            EndDialog(hDlg, IDC_USE_ORIGINAL);
-            return TRUE;
-        }
-        if (LOWORD(wParam) == IDC_USE_TYPED) {
-            char typed[256];
-            GetDlgItemTextA(hDlg, IDC_MATCH_EDIT, typed, sizeof(typed));
-            if (strlen(typed) == 0) {
-                MessageBox(hDlg, "Please enter a name or click Cancel.", "Empty Name", MB_OK | MB_ICONWARNING);
-                return TRUE;
-            }
-            int newMatchCount = 0;
-            const char **newMatches = NULL;
-            GetFilteredMatchingItems(typed, pData->excludeWords, &newMatches, &newMatchCount);
-            free((void*)newMatches);
-            char msg[512];
-            sprintf(msg, "Your typed name \"%s\" would match %d item(s).\n\nUse this name?", typed, newMatchCount);
-            if (MessageBox(hDlg, msg, "Confirm Typed Name", MB_YESNO | MB_ICONQUESTION) == IDYES) {
-                strcpy(pData->selected, typed);
-                EndDialog(hDlg, IDOK);
-            }
-            return TRUE;
-        }
-        if (LOWORD(wParam) == IDCANCEL) {
-            EndDialog(hDlg, IDCANCEL);
-            return TRUE;
-        }
-        if (LOWORD(wParam) == IDC_MATCH_LIST && HIWORD(wParam) == LBN_DBLCLK) {
-            HWND hList = GetDlgItem(hDlg, IDC_MATCH_LIST);
-            int sel = SendMessage(hList, LB_GETCURSEL, 0, 0);
-            if (sel != LB_ERR) {
-                SendMessageA(hList, LB_GETTEXT, sel, (LPARAM)pData->selected);
-                EndDialog(hDlg, IDOK);
-            }
-            return TRUE;
-        }
-        break;
-    }
-    return FALSE;
-}
-
-static INT_PTR CALLBACK ItemEditDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-    ItemEditData *pData = (ItemEditData*)GetWindowLongPtr(hDlg, DWLP_USER);
-    static HBRUSH hBrush = NULL;
-
-    switch (msg) {
-    case WM_INITDIALOG:
-        pData = (ItemEditData*)lParam;
-        SetWindowLongPtr(hDlg, DWLP_USER, (LONG_PTR)pData);
-        SetWindowTextA(hDlg, pData->isAdd ? "Add Item" : "Edit Item");
-        SetDlgItemTextA(hDlg, IDC_ITEM_NAME, pData->itemName);
-        SetDlgItemInt(hDlg, IDC_LIMIT, pData->limit, FALSE);
-        CheckDlgButton(hDlg, IDC_FORCE, pData->force ? BST_CHECKED : BST_UNCHECKED);
-        SetDlgItemTextA(hDlg, IDC_EXCLUDE, pData->exclude);
-        hBrush = CreateSolidBrush(RGB(170, 170, 170));
-        return TRUE;
-
-    case WM_CTLCOLORDLG:
-    case WM_CTLCOLORSTATIC:
-        if (hBrush) {
-            SetBkMode((HDC)wParam, TRANSPARENT);
-            SetTextColor((HDC)wParam, RGB(0, 0, 0));
-            return (INT_PTR)hBrush;
-        }
-        break;
-
-    case WM_DRAWITEM:
-        {
-            DRAWITEMSTRUCT *dis = (DRAWITEMSTRUCT*)lParam;
-            if (dis->CtlType != ODT_BUTTON) break;
-
-            HDC hdc = dis->hDC;
-            RECT rc = dis->rcItem;
-
-            // Colors (same as hidden tabs)
-            COLORREF bgNormal   = RGB(104, 137, 161);
-            COLORREF bgPressed  = RGB(30, 30, 40);
-            COLORREF borderCol  = RGB(100, 100, 140);
-            COLORREF textCol    = RGB(0, 0, 0);
-
-            // Pick bg based on state (pressed only, no hover for simplicity)
-            COLORREF bg = bgNormal;
-            if (dis->itemState & ODS_SELECTED)
-                bg = bgPressed;
-
-            // Fill background
-            HBRUSH hBrushBtn = CreateSolidBrush(bg);
-            FillRect(hdc, &rc, hBrushBtn);
-            DeleteObject(hBrushBtn);
-
-            // Draw rounded border
-            HPEN hPen = CreatePen(PS_SOLID, 1, borderCol);
-            HPEN hOldPen = SelectObject(hdc, hPen);
-            HBRUSH hOldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-            RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 6, 6);
-            SelectObject(hdc, hOldPen);
-            SelectObject(hdc, hOldBrush);
-            DeleteObject(hPen);
-
-            // Draw text
-            char text[64] = "";
-            GetWindowTextA(dis->hwndItem, text, sizeof(text));
-            SetTextColor(hdc, textCol);
-            SetBkMode(hdc, TRANSPARENT);
-            DrawTextA(hdc, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-            return TRUE;
-        }
-
-    case WM_DESTROY:
-        if (hBrush) DeleteObject(hBrush);
-        break;
-
-    case WM_COMMAND:
-        switch (LOWORD(wParam)) {
-        case IDOK:
-            {
-                char enteredName[256];
-                GetDlgItemTextA(hDlg, IDC_ITEM_NAME, enteredName, sizeof(enteredName));
-                char *start = enteredName;
-                while (*start == ' ') start++;
-                char *end = start + strlen(start) - 1;
-                while (end > start && *end == ' ') end--;
-                *(end + 1) = '\0';
-                if (strlen(start) == 0) {
-                    MessageBox(hDlg, "Item name cannot be empty.", "Validation", MB_OK | MB_ICONWARNING);
-                    return TRUE;
-                }
-                char excludeTemp[256];
-                GetDlgItemTextA(hDlg, IDC_EXCLUDE, excludeTemp, sizeof(excludeTemp));
-                int matchCount = 0;
-                const char **matches = NULL;
-                GetFilteredMatchingItems(start, excludeTemp, &matches, &matchCount);
-                if (matchCount > 0) {
-                    char msg[256];
-                    sprintf(msg, "That would match %d item(s).\n\nBefore we add/update it, would you like to see a list of those possible matches?", matchCount);
-                    int answer = MessageBox(hDlg, msg, "Multiple Matches", MB_YESNO | MB_ICONQUESTION);
-                    if (answer == IDYES) {
-                        MatchListData data;
-                        data.matches = matches;
-                        data.count = matchCount;
-                        data.selected[0] = '\0';
-                        strcpy(data.originalSearch, start);
-                        strcpy(data.excludeWords, excludeTemp);
-                        INT_PTR result = DialogBoxParam(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_MATCH_LIST),
-                                                        hDlg, MatchListDlgProc, (LPARAM)&data);
-                        if (result == IDOK && data.selected[0] != '\0')
-                            strcpy(start, data.selected);
-                        else if (result != IDC_USE_ORIGINAL) {
-                            free((void*)matches);
-                            return TRUE;
-                        }
-                    }
-                    free((void*)matches);
-                } else {
-                    char msg[512];
-                    sprintf(msg, "Item \"%s\" would not match any known item.\n\nAdd it anyway?", start);
-                    if (MessageBox(hDlg, msg, "Unknown Item", MB_YESNO | MB_ICONQUESTION) != IDYES)
-                        return TRUE;
-                }
-                strcpy(pData->itemName, start);
-                pData->limit = GetDlgItemInt(hDlg, IDC_LIMIT, NULL, FALSE);
-                pData->force = (IsDlgButtonChecked(hDlg, IDC_FORCE) == BST_CHECKED);
-                GetDlgItemTextA(hDlg, IDC_EXCLUDE, pData->exclude, sizeof(pData->exclude));
-                EndDialog(hDlg, IDOK);
-                return TRUE;
-            }
-        case IDCANCEL:
-            EndDialog(hDlg, IDCANCEL);
-            return TRUE;
-        }
-        break;
-    }
-    return FALSE;
-}
-
-static INT_PTR CALLBACK MassAddDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-    switch (msg) {
-    case WM_INITDIALOG:
-        SetFocus(GetDlgItem(hDlg, IDC_MASS_EDIT));
-        return FALSE;
-    case WM_COMMAND:
-        switch (LOWORD(wParam)) {
-        case IDOK:
-            {
-                char text[65536];
-                GetDlgItemTextA(hDlg, IDC_MASS_EDIT, text, sizeof(text));
-                char *p = text;
-                char line[1024];
-                int lineIdx;
-                while (*p) {
-                    lineIdx = 0;
-                    while (*p && *p != '\r' && *p != '\n') {
-                        if (lineIdx < (int)sizeof(line)-1) line[lineIdx++] = *p;
-                        p++;
-                    }
-                    line[lineIdx] = '\0';
-                    if (lineIdx == 0) { while (*p == '\r' || *p == '\n') p++; continue; }
-                    char *start = line;
-                    while (*start == ' ' || *start == '\t') start++;
-                    char *end = start + strlen(start) - 1;
-                    while (end > start && (*end == ' ' || *end == '\t')) end--;
-                    *(end + 1) = '\0';
-                    if (*start == '\0') { while (*p == '\r' || *p == '\n') p++; continue; }
-                    // Parse line
-                    char *ptr = start;
-                    int disabled = 0, force = 0;
-                    if (*ptr == '#') { disabled = 1; ptr++; while (*ptr == ' ' || *ptr == '\t') ptr++; }
-                    if (*ptr == '~') { force = 1; ptr++; while (*ptr == ' ' || *ptr == '\t') ptr++; }
-                    char itemName[256] = {0};
-                    int limit = 1;
-                    char excludeWords[256] = {0};
-                    char *nameStart = ptr;
-                    char *nameEnd = nameStart;
-                    while (*nameEnd && *nameEnd != ';' && *nameEnd != '^') nameEnd++;
-                    int nameLen = (int)(nameEnd - nameStart);
-                    if (nameLen >= (int)sizeof(itemName)) nameLen = sizeof(itemName)-1;
-                    strncpy(itemName, nameStart, nameLen);
-                    itemName[nameLen] = '\0';
-                    char *trimEnd = itemName + strlen(itemName) - 1;
-                    while (trimEnd >= itemName && (*trimEnd == ' ' || *trimEnd == '\t')) *trimEnd-- = '\0';
-                    ptr = nameEnd;
-                    if (*ptr == ';') {
-                        ptr++;
-                        limit = atoi(ptr);
-                        if (limit < 0) limit = 0;
-                        while (*ptr && *ptr != ' ' && *ptr != '^') ptr++;
-                    }
-                    while (*ptr) {
-                        while (*ptr == ' ') ptr++;
-                        if (*ptr == '^') {
-                            ptr++;
-                            while (*ptr == ' ') ptr++;
-                            char word[128] = {0};
-                            int wlen = 0;
-                            while (*ptr && *ptr != ' ' && *ptr != '^') {
-                                if (wlen < (int)sizeof(word)-1) word[wlen++] = *ptr;
-                                ptr++;
-                            }
-                            word[wlen] = '\0';
-                            if (wlen > 0) {
-                                if (excludeWords[0] != '\0') strcat(excludeWords, " ");
-                                strcat(excludeWords, word);
-                            }
-                        } else break;
-                    }
-                    if (strlen(itemName) == 0) { while (*p == '\r' || *p == '\n') p++; continue; }
-                    char raw[512];
-                    BuildItemString(raw, sizeof(raw), itemName, disabled, force, limit, excludeWords);
-                    char display[1024];
-                    FormatItemForDisplay(raw, display, sizeof(display));
-                    puDoMethod(g_ItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
-                    puDoMethod(g_ItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
-                    puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
-                    while (*p == '\r' || *p == '\n') p++;
-                }
-                EndDialog(hDlg, IDOK);
-                return TRUE;
-            }
-        case IDCANCEL:
-            EndDialog(hDlg, IDCANCEL);
-            return TRUE;
-        }
-        break;
-    }
-    return FALSE;
-}
-
-int ShowItemEditDialog(HWND hParent, ItemEditData *pData, int bIsAddMode)
-{
-    HINSTANCE hInst = (HINSTANCE)GetWindowLongPtr(hParent, GWLP_HINSTANCE);
-    if (!hInst) hInst = GetModuleHandle(NULL);
-    INT_PTR result = DialogBoxParamA(hInst, MAKEINTRESOURCEA(IDD_ITEM_EDIT),
-                                     hParent, ItemEditDlgProc, (LPARAM)pData);
-    return (result == IDOK) ? 1 : 0;
-}
-
-int ParseDisplayString(const char *display, char *itemName, size_t itemNameSize,
-                              int *disabled, int *forceAccept, int *quantityLimit,
-                              char *excludeWords, size_t excludeSize)
-{
-    *disabled = 0;
-    *forceAccept = 0;
-    *quantityLimit = 0;
-    if (excludeWords) excludeWords[0] = '\0';
-    if (itemName) itemName[0] = '\0';
-    if (!display || !*display) return -1;
-
-    // Copy to buffer
-    char buf[1024];
-    strncpy(buf, display, sizeof(buf)-1);
-    buf[sizeof(buf)-1] = '\0';
-
-    // Look for the first '[' to separate name from tags
-    char *p = buf;
-    char *nameEnd = strchr(p, '[');
-    if (nameEnd) {
-        // Name is before first '['
-        size_t nameLen = nameEnd - p;
-        // trim trailing spaces
-        while (nameLen > 0 && p[nameLen-1] == ' ') nameLen--;
-        if (nameLen >= itemNameSize) nameLen = itemNameSize-1;
-        strncpy(itemName, p, nameLen);
-        itemName[nameLen] = '\0';
-        p = nameEnd;
-    } else {
-        // No brackets, treat whole string as name
-        strncpy(itemName, p, itemNameSize-1);
-        return 0;
-    }
-
-    // Parse tags inside brackets
-    while (*p) {
-        // skip to next '['
-        while (*p && *p != '[') p++;
-        if (!*p) break;
-        p++; // skip '['
-        // find closing ']'
-        char *tagEnd = strchr(p, ']');
-        if (!tagEnd) break;
-        int tagLen = tagEnd - p;
-        char tag[256];
-        strncpy(tag, p, tagLen);
-        tag[tagLen] = '\0';
-        p = tagEnd + 1;
-
-        // check tag content
-        if (strcmp(tag, "disabled") == 0) {
-            *disabled = 1;
-        } else if (strcmp(tag, "force accept") == 0) {
-            *forceAccept = 1;
-        } else if (strncmp(tag, "qty ", 4) == 0) {
-            *quantityLimit = atoi(tag + 4);
-        } else if (strncmp(tag, "exclude: ", 9) == 0) {
-            const char *excl = tag + 9;
-            // copy exclude words, replace commas with spaces
-            char exclBuf[256];
-            strncpy(exclBuf, excl, sizeof(exclBuf)-1);
-            exclBuf[sizeof(exclBuf)-1] = '\0';
-            for (char *c = exclBuf; *c; c++) if (*c == ',') *c = ' ';
-            strncpy(excludeWords, exclBuf, excludeSize-1);
-            excludeWords[excludeSize-1] = '\0';
-        }
-    }
-    return 0;
-}
-
-LRESULT CALLBACK MainWndProcHook(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
-{
-    if (uMsg == WM_TIMER && wParam == TIMER_BUYINGAGENT)
-    {
-        KillTimer(hWnd, TIMER_BUYINGAGENT);
-        g_TimerID = 0;
-        puPostAppMessage(CSAM_BUYINGAGENT_TIMER, 0);
-        return 0;
-    }
-
-    if (uMsg == WM_MOVE || uMsg == WM_MOVING)
-    {
-        if (g_hHiddenTabsWnd && IsWindow(g_hHiddenTabsWnd) && IsWindowVisible(g_hHiddenTabsWnd)) {
-            RECT r;
-            GetWindowRect(hWnd, &r);
-            RECT rcDlg;
-            GetWindowRect(g_hHiddenTabsWnd, &rcDlg);
-            int dlgW = rcDlg.right - rcDlg.left;
-            int dlgH = rcDlg.bottom - rcDlg.top;
-            SetWindowPos(g_hHiddenTabsWnd, NULL,
-				r.right - 16,
-				r.top,
-				dlgW, dlgH,
-				SWP_NOZORDER | SWP_NOSIZE);
-        }
-    }
-
-    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
-}
-
-static LRESULT CALLBACK BAWndProcHook(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
-{
-    if (uMsg == WM_MOVE || uMsg == WM_MOVING)
-    {
-        RECT r;
-        GetWindowRect(hWnd, &r);
-        g_BAWindowX = r.left;
-        g_BAWindowY = r.top;
-    }
-    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
-}
-
-
-void BuildItemString(char *dest, size_t destSize,
-                     const char *itemName,
-                     int disabled,
-                     int forceAccept,
-                     int quantityLimit,
-                     const char *excludeWords)
-{
-    dest[0] = '\0';
-    if (disabled) strncat(dest, "#", destSize - strlen(dest) - 1);
-    if (forceAccept) strncat(dest, "~", destSize - strlen(dest) - 1);
-    strncat(dest, itemName, destSize - strlen(dest) - 1);
-    if (quantityLimit > 0) {
-        char buf[16];
-        sprintf(buf, ";%d", quantityLimit);
-        strncat(dest, buf, destSize - strlen(dest) - 1);
-    }
-    if (excludeWords && *excludeWords) {
-        char *tmp = _strdup(excludeWords);
-        char *token = strtok(tmp, ", ");
-        while (token) {
-            strncat(dest, " ^", destSize - strlen(dest) - 2);
-            strncat(dest, token, destSize - strlen(dest) - 1);
-            token = strtok(NULL, ", ");
-        }
-        free(tmp);
-    }
-}
-
-void FormatItemForDisplay(const char *raw, char *out, size_t outSize)
-{
-    char itemName[256];
-    int disabled = 0, force = 0, limit = 0;
-    char exclude[256];
-
-    // Parse the raw format (supports #, ~, ;N, ^exclude)
-    ParseItemString(raw, itemName, sizeof(itemName),
-                    &disabled, &force, &limit, exclude, sizeof(exclude));
-
-    out[0] = '\0';
-    strncat(out, itemName, outSize - strlen(out) - 1);
-
-    if (disabled)
-        strncat(out, " [disabled]", outSize - strlen(out) - 1);
-    if (force)
-        strncat(out, " [force accept]", outSize - strlen(out) - 1);
-    if (limit > 0) {
-        char buf[32];
-        sprintf(buf, " [qty %d]", limit);
-        strncat(out, buf, outSize - strlen(out) - 1);
-    }
-    if (exclude[0]) {
-        char tmp[256];
-        strncpy(tmp, exclude, sizeof(tmp) - 1);
-        tmp[sizeof(tmp)-1] = '\0';
-        char *tok = strtok(tmp, " ");
-        char formatted[256] = "";
-        while (tok) {
-            if (formatted[0])
-                strncat(formatted, ", ", sizeof(formatted)-strlen(formatted)-1);
-            strncat(formatted, tok, sizeof(formatted)-strlen(formatted)-1);
-            tok = strtok(NULL, " ");
-        }
-        char buf[512];
-        sprintf(buf, " [exclude: %s]", formatted);
-        strncat(out, buf, outSize - strlen(out) - 1);
-    }
-}
-
-void MakeTableEntry(char *dest, size_t destSize, const char *raw)
-{
-    FormatItemForDisplay(raw, dest, destSize);
-}
 
 void CleanUp()
 {
@@ -3124,6 +2226,7 @@ void CleanUp()
     puClear();
 	FreeItemNameCache();
 }
+
 
 enum
 {

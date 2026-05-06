@@ -17,8 +17,6 @@
 #define AODB_TYP_ICON       1010008
 #define AODB_TYP_PF         1000001
 
-#define CSAM_SHOW_HIDDEN_TABS  (CSAM_REMOVE_DUPLICATE_ITEMS + 1)
-
 // GUI object IDs
 enum
 {
@@ -173,7 +171,6 @@ extern PUU32 g_GUIDef[];
 int IsWatchlistEntryValid(const char *searchStr);
 int GetMatchingItems(const char *searchStr, const char ***outItems, int *outCount);
 int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, const char ***outItems, int *outCount);
-int ParseDisplayString(const char *display, char *itemName, size_t itemNameSize, int *disabled, int *forceAccept, int *quantityLimit, char *excludeWords, size_t excludeSize);
 
 // Endianness macros
 #define EndianSwap16(x) ( ( x ) >> 8 | ( x ) << 8 )
