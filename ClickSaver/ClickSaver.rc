@@ -68,31 +68,28 @@ BEGIN
 
     // ========== Items Tab ==========
    CONTROL         "", IDC_ITEM_LIST, "SysListView32", WS_CHILD | WS_BORDER | LVS_REPORT | LVS_SINGLESEL,
-                12, 30, 216, 220
-    PUSHBUTTON      "Add",        IDC_BTN_ADD,                20, 260, 45, 14, BS_OWNERDRAW
-    PUSHBUTTON      "Remove",     IDC_BTN_REMOVE,             20, 290, 45, 14, BS_OWNERDRAW
-    PUSHBUTTON      "Edit",       IDC_BTN_EDIT,              120, 260, 45, 14, BS_OWNERDRAW
-    PUSHBUTTON      "Disable >>", IDC_BTN_DISABLE,           170, 260, 45, 14, BS_OWNERDRAW
-    PUSHBUTTON      "Import",     IDC_BTN_IMPORT,             20, 275, 45, 14, BS_OWNERDRAW
-    PUSHBUTTON      "Export",     IDC_BTN_EXPORT,             70, 275, 45, 14, BS_OWNERDRAW
-    PUSHBUTTON      "Duplicates",     IDC_BTN_REMOVE_DUPLICATES, 120, 275, 45, 14, BS_OWNERDRAW
-    PUSHBUTTON      "Remove All",     IDC_BTN_REMOVE_ALL,        70, 290, 45, 14, BS_OWNERDRAW
-	PUSHBUTTON      "Mass Add",     IDC_BTN_MASS_ADD,       70, 260, 45, 14, BS_OWNERDRAW
-	PUSHBUTTON      "Disable All>>",  IDC_BTN_DISABLE_ALL,   170, 275, 45, 14, BS_OWNERDRAW
+                12, 30, 216, 250
+    PUSHBUTTON      "Add",        IDC_BTN_ADD,                20, 290, 45, 14, BS_OWNERDRAW
+    PUSHBUTTON      "Remove",     IDC_BTN_REMOVE,             70, 290, 45, 14, BS_OWNERDRAW
+    PUSHBUTTON      "Edit",       IDC_BTN_EDIT,              120, 290, 45, 14, BS_OWNERDRAW
+    PUSHBUTTON      "Disable >>", IDC_BTN_DISABLE,           170, 290, 45, 14, BS_OWNERDRAW
+    PUSHBUTTON      "Import",     IDC_BTN_IMPORT,             20, 305, 45, 14, BS_OWNERDRAW
+    PUSHBUTTON      "Export",     IDC_BTN_EXPORT,             70, 305, 45, 14, BS_OWNERDRAW
+    PUSHBUTTON      "Duplicates",     IDC_BTN_REMOVE_DUPLICATES, 120, 305, 45, 14, BS_OWNERDRAW
+    PUSHBUTTON      "Remove All",     IDC_BTN_REMOVE_ALL,        170, 305, 45, 14, BS_OWNERDRAW
 
     // ========== Disabled Tab ==========  centered in 230du tab (buttons total ~155du, start at (230-155)/2 = ~37)
     CONTROL         "", IDC_DISABLED_LIST, "SysListView32", WS_CHILD | WS_BORDER | LVS_REPORT | LVS_SINGLESEL,
                 12, 30, 216, 250
-    PUSHBUTTON      "<< Enable",  IDC_BTN_ENABLE,             30, 290, 45, 14, BS_OWNERDRAW
-    PUSHBUTTON      "Remove",     IDC_BTN_REMOVE_DISABLED,    95, 290, 45, 14, BS_OWNERDRAW
-    PUSHBUTTON      "Remove All",     IDC_BTN_REMOVE_ALL_DISABLED,150, 290, 45, 14, BS_OWNERDRAW
-	PUSHBUTTON      "<<Enable All",   IDC_BTN_ENABLE_ALL,   30, 305, 45, 14, BS_OWNERDRAW
+    PUSHBUTTON      "<< Enable",  IDC_BTN_ENABLE,             30, 290, 60, 14, BS_OWNERDRAW
+    PUSHBUTTON      "Remove",     IDC_BTN_REMOVE_DISABLED,    95, 290, 50, 14, BS_OWNERDRAW
+    PUSHBUTTON      "Remove All",     IDC_BTN_REMOVE_ALL_DISABLED,150, 290, 50, 14, BS_OWNERDRAW
 
     // ========== Locations Tab ========== centered (buttons total ~100du, start at ~65)
     CONTROL         "", IDC_LOCATION_LIST, "SysListView32", WS_CHILD | WS_BORDER | LVS_REPORT | LVS_SINGLESEL,
                 12, 30, 216, 250
     PUSHBUTTON      "Add",        IDC_LOCATION_ADD,           70, 290, 45, 14, BS_OWNERDRAW
-    PUSHBUTTON      "Remove",     IDC_LOCATION_REMOVE,       120, 290, 45, 14, BS_OWNERDRAW
+    PUSHBUTTON      "Remove",     IDC_LOCATION_REMOVE,       120, 290, 50, 14, BS_OWNERDRAW
 
     // ========== Mission Types Tab ==========
 	AUTOCHECKBOX    "Repair",      IDC_TYPE_REPAIR,  90, 45, 80, 10

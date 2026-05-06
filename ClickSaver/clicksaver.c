@@ -442,120 +442,6 @@ static void SyncHiddenTabCheckboxes(HWND hDlg)
     CheckDlgButton(hDlg, IDC_TYPE_HIGHLIGHT_CB, PUL_GET_CB(CS_HIGHLIGHTTYPE_CB) ? BST_CHECKED : BST_UNCHECKED);
 }
 
-static void SelectListItemByIndex(HWND hList, int index)
-{
-    // Clear all selections
-    ListView_SetItemState(hList, -1, 0, LVIS_SELECTED);
-
-    if (index >= 0)
-    {
-        // Select and focus the new item
-        ListView_SetItemState(hList, index,
-                              LVIS_SELECTED | LVIS_FOCUSED,
-                              LVIS_SELECTED | LVIS_FOCUSED);
-        // Ensure it is visible
-        ListView_EnsureVisible(hList, index, FALSE);
-        // Redraw the specific item
-        ListView_RedrawItems(hList, index, index);
-    }
-    // Force full redraw
-    InvalidateRect(hList, NULL, TRUE);
-    UpdateWindow(hList);
-}
-
-static INT_PTR CALLBACK MassAddDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-    switch (msg) {
-    case WM_INITDIALOG:
-        SetFocus(GetDlgItem(hDlg, IDC_MASS_EDIT));
-        return FALSE;
-    case WM_COMMAND:
-        switch (LOWORD(wParam)) {
-        case IDOK:
-            {
-                char text[65536];
-                GetDlgItemTextA(hDlg, IDC_MASS_EDIT, text, sizeof(text));
-                char *p = text;
-                char line[1024];
-                int lineIdx;
-                while (*p) {
-                    lineIdx = 0;
-                    while (*p && *p != '\r' && *p != '\n') {
-                        if (lineIdx < (int)sizeof(line)-1) line[lineIdx++] = *p;
-                        p++;
-                    }
-                    line[lineIdx] = '\0';
-                    if (lineIdx == 0) { while (*p == '\r' || *p == '\n') p++; continue; }
-                    char *start = line;
-                    while (*start == ' ' || *start == '\t') start++;
-                    char *end = start + strlen(start) - 1;
-                    while (end > start && (*end == ' ' || *end == '\t')) end--;
-                    *(end + 1) = '\0';
-                    if (*start == '\0') { while (*p == '\r' || *p == '\n') p++; continue; }
-                    // Parse line
-                    char *ptr = start;
-                    int disabled = 0, force = 0;
-                    if (*ptr == '#') { disabled = 1; ptr++; while (*ptr == ' ' || *ptr == '\t') ptr++; }
-                    if (*ptr == '~') { force = 1; ptr++; while (*ptr == ' ' || *ptr == '\t') ptr++; }
-                    char itemName[256] = {0};
-                    int limit = 1;
-                    char excludeWords[256] = {0};
-                    char *nameStart = ptr;
-                    char *nameEnd = nameStart;
-                    while (*nameEnd && *nameEnd != ';' && *nameEnd != '^') nameEnd++;
-                    int nameLen = (int)(nameEnd - nameStart);
-                    if (nameLen >= (int)sizeof(itemName)) nameLen = sizeof(itemName)-1;
-                    strncpy(itemName, nameStart, nameLen);
-                    itemName[nameLen] = '\0';
-                    char *trimEnd = itemName + strlen(itemName) - 1;
-                    while (trimEnd >= itemName && (*trimEnd == ' ' || *trimEnd == '\t')) *trimEnd-- = '\0';
-                    ptr = nameEnd;
-                    if (*ptr == ';') {
-                        ptr++;
-                        limit = atoi(ptr);
-                        if (limit < 0) limit = 0;
-                        while (*ptr && *ptr != ' ' && *ptr != '^') ptr++;
-                    }
-                    while (*ptr) {
-                        while (*ptr == ' ') ptr++;
-                        if (*ptr == '^') {
-                            ptr++;
-                            while (*ptr == ' ') ptr++;
-                            char word[128] = {0};
-                            int wlen = 0;
-                            while (*ptr && *ptr != ' ' && *ptr != '^') {
-                                if (wlen < (int)sizeof(word)-1) word[wlen++] = *ptr;
-                                ptr++;
-                            }
-                            word[wlen] = '\0';
-                            if (wlen > 0) {
-                                if (excludeWords[0] != '\0') strcat(excludeWords, " ");
-                                strcat(excludeWords, word);
-                            }
-                        } else break;
-                    }
-                    if (strlen(itemName) == 0) { while (*p == '\r' || *p == '\n') p++; continue; }
-                    char raw[512];
-                    BuildItemString(raw, sizeof(raw), itemName, disabled, force, limit, excludeWords);
-                    char display[1024];
-                    FormatItemForDisplay(raw, display, sizeof(display));
-                    puDoMethod(g_ItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
-                    puDoMethod(g_ItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
-                    puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
-                    while (*p == '\r' || *p == '\n') p++;
-                }
-                EndDialog(hDlg, IDOK);
-                return TRUE;
-            }
-        case IDCANCEL:
-            EndDialog(hDlg, IDCANCEL);
-            return TRUE;
-        }
-        break;
-    }
-    return FALSE;
-}
-
 // ========== HIDDEN TABS DIALOG PROCEDURE (WIN32) ==========
 static INT_PTR CALLBACK HiddenTabsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
 {
@@ -594,7 +480,6 @@ static INT_PTR CALLBACK HiddenTabsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
 				// Get control handles
 				hItemList = GetDlgItem(hDlg, IDC_ITEM_LIST);
 				hDisabledList = GetDlgItem(hDlg, IDC_DISABLED_LIST);
-				SetWindowLong(hDisabledList, GWL_STYLE, GetWindowLong(hDisabledList, GWL_STYLE) | LVS_SHOWSELALWAYS);
 				hLocationList = GetDlgItem(hDlg, IDC_LOCATION_LIST);
 				hTypeRepair = GetDlgItem(hDlg, IDC_TYPE_REPAIR);
 				hTypeReturn = GetDlgItem(hDlg, IDC_TYPE_RETURN);
@@ -722,10 +607,6 @@ static INT_PTR CALLBACK HiddenTabsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
 				ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE_ALL_DISABLED), SW_HIDE);
 				ShowWindow(GetDlgItem(hDlg, IDC_LOCATION_ADD), SW_HIDE);
 				ShowWindow(GetDlgItem(hDlg, IDC_LOCATION_REMOVE), SW_HIDE);
-				
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_MASS_ADD), SW_SHOW);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_DISABLE_ALL), SW_SHOW);
-				ShowWindow(GetDlgItem(hDlg, IDC_BTN_ENABLE_ALL), SW_HIDE);
 			
 				// ========== CRITICAL: Show the Items tab’s own checkboxes ==========
 				ShowWindow(GetDlgItem(hDlg, IDC_ITEM_MATCH_CB), SW_SHOW);
@@ -826,9 +707,7 @@ static INT_PTR CALLBACK HiddenTabsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
 						ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE_ALL), SW_SHOW);
 						ShowWindow(GetDlgItem(hDlg, IDC_ITEM_MATCH_CB), SW_SHOW);
 						ShowWindow(GetDlgItem(hDlg, IDC_ITEM_HIGHLIGHT_CB), SW_SHOW);
-						ShowWindow(GetDlgItem(hDlg, IDC_BTN_MASS_ADD), SW_SHOW);
-						ShowWindow(GetDlgItem(hDlg, IDC_BTN_DISABLE_ALL), SW_SHOW);
-						ShowWindow(hItemMatchLabel, SW_SHOW);
+						 ShowWindow(hItemMatchLabel, SW_SHOW);
 						ShowWindow(hItemHighlightLabel, SW_SHOW);
 						// Explicitly hide mission type checkboxes (safety)
 						ShowWindow(hTypeRepair, SW_HIDE);
@@ -842,7 +721,6 @@ static INT_PTR CALLBACK HiddenTabsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
 						ShowWindow(hLocHighlightLabel, SW_HIDE);
 						ShowWindow(hTypeMatchLabel, SW_HIDE);
 						ShowWindow(hTypeHighlightLabel, SW_HIDE);
-						ShowWindow(GetDlgItem(hDlg, IDC_BTN_ENABLE_ALL), SW_HIDE);
 						PopulateItemList(hItemList, g_ItemWatchList);
 						break;
 					
@@ -851,7 +729,6 @@ static INT_PTR CALLBACK HiddenTabsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
 							ShowWindow(GetDlgItem(hDlg, IDC_BTN_ENABLE), SW_SHOW);
 							ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE_DISABLED), SW_SHOW);
 							ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE_ALL_DISABLED), SW_SHOW);
-							ShowWindow(GetDlgItem(hDlg, IDC_BTN_ENABLE_ALL), SW_SHOW);
 							// Disabled tab – no checkboxes – hide all
 							ShowWindow(GetDlgItem(hDlg, IDC_ITEM_MATCH_CB), SW_HIDE);
 							ShowWindow(GetDlgItem(hDlg, IDC_ITEM_HIGHLIGHT_CB), SW_HIDE);
@@ -867,8 +744,6 @@ static INT_PTR CALLBACK HiddenTabsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
 							ShowWindow(hLocHighlightLabel, SW_HIDE);
 							ShowWindow(hTypeMatchLabel, SW_HIDE);
 							ShowWindow(hTypeHighlightLabel, SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_BTN_MASS_ADD), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_BTN_DISABLE_ALL), SW_HIDE);
 							PopulateDisabledList(hDisabledList);
 							break;
 					
@@ -892,9 +767,6 @@ static INT_PTR CALLBACK HiddenTabsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
 							ShowWindow(hItemHighlightLabel, SW_HIDE);
 							ShowWindow(hTypeMatchLabel, SW_HIDE);
 							ShowWindow(hTypeHighlightLabel, SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_BTN_MASS_ADD), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_BTN_DISABLE_ALL), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_BTN_ENABLE_ALL), SW_HIDE);
 							PopulateLocationList(hLocationList);
 							break;
 					
@@ -916,13 +788,11 @@ static INT_PTR CALLBACK HiddenTabsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
 							ShowWindow(GetDlgItem(hDlg, IDC_LOC_HIGHLIGHT_CB), SW_HIDE);
 							ShowWindow(hItemValueHint1, SW_HIDE);
 							ShowWindow(hItemValueHint2, SW_HIDE);
+							
 							ShowWindow(hItemMatchLabel, SW_HIDE);
 							ShowWindow(hItemHighlightLabel, SW_HIDE);
 							ShowWindow(hLocMatchLabel, SW_HIDE);
 							ShowWindow(hLocHighlightLabel, SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_BTN_MASS_ADD), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_BTN_DISABLE_ALL), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_BTN_ENABLE_ALL), SW_HIDE);
 							
 							SyncTypeCheckboxes(hDlg);
 							break;
@@ -954,9 +824,6 @@ static INT_PTR CALLBACK HiddenTabsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
 							ShowWindow(hLocHighlightLabel, SW_HIDE);
 							ShowWindow(hTypeMatchLabel, SW_HIDE);
 							ShowWindow(hTypeHighlightLabel, SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_BTN_MASS_ADD), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_BTN_DISABLE_ALL), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_BTN_ENABLE_ALL), SW_HIDE);
 							SyncValueControls(hDlg);
 							break;
 					
@@ -993,9 +860,6 @@ static INT_PTR CALLBACK HiddenTabsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
 							ShowWindow(hLocHighlightLabel, SW_HIDE);
 							ShowWindow(hTypeMatchLabel, SW_HIDE);
 							ShowWindow(hTypeHighlightLabel, SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_BTN_MASS_ADD), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_BTN_DISABLE_ALL), SW_HIDE);
-							ShowWindow(GetDlgItem(hDlg, IDC_BTN_ENABLE_ALL), SW_HIDE);
 							SyncSliderValues(hDlg);
 							break;
 					
@@ -1216,143 +1080,43 @@ static INT_PTR CALLBACK HiddenTabsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
 						}
 					}
             else if (id == IDC_BTN_DISABLE) {
-					int sel = ListView_GetNextItem(hItemList, -1, LVNI_SELECTED);
-					if (sel >= 0) {
-						// --- Get current item count before removal ---
-						int oldCount = ListView_GetItemCount(hItemList);
-				
-						PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-						for (int i = 0; i < sel && record; i++)
-							record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
-						if (record) {
-							PUU8 *display = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
-							if (display) {
-								// Turn off redraw to avoid flicker
-								SendMessage(hItemList, WM_SETREDRAW, FALSE, 0);
-								
-								// Move to disabled list
-								puDoMethod(g_DisabledItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
-								puDoMethod(g_DisabledItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
-								puDoMethod(g_DisabledItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
-								puDoMethod(g_ItemWatchList, PUM_TABLE_REMRECORD, record, 0);
-				
-								// Refresh both lists
-								PopulateItemList(hItemList, g_ItemWatchList);
-								PopulateDisabledList(hDisabledList);
-				
-								// Re-enable redraw
-								SendMessage(hItemList, WM_SETREDRAW, TRUE, 0);
-				
-								// --- Compute new selection index ---
-								int newSel = -1;
-								if (oldCount > 1) {
-									// If we removed the last item, select the new last one
-									newSel = (sel < oldCount - 1) ? sel : oldCount - 2;
-								}
-								SelectListItemByIndex(hItemList, newSel);
-								SetFocus(hItemList);
-							}
-						}
-					}
-				}
-          else if (id == IDC_BTN_ENABLE) {
-				int sel = ListView_GetNextItem(hDisabledList, -1, LVNI_SELECTED);
-				if (sel >= 0) {
-					int oldCount = ListView_GetItemCount(hDisabledList);
-			
-					PUU32 record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-					for (int i = 0; i < sel && record; i++)
-						record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
-					if (record) {
-						PUU8 *display = (PUU8*)puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
-						if (display) {
-							// Turn off redraw to avoid flicker
-							SendMessage(hDisabledList, WM_SETREDRAW, FALSE, 0);
-			
-							puDoMethod(g_ItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
-							puDoMethod(g_ItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
-							puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
-							puDoMethod(g_DisabledItemWatchList, PUM_TABLE_REMRECORD, record, 0);
-			
-							PopulateItemList(hItemList, g_ItemWatchList);
-							PopulateDisabledList(hDisabledList);
-			
-							// Re-enable redraw
-							SendMessage(hDisabledList, WM_SETREDRAW, TRUE, 0);
-			
-							// Compute new selection index
-							int newSel = (oldCount > 1) ? ((sel < oldCount - 1) ? sel : oldCount - 2) : -1;
-							SelectListItemByIndex(hDisabledList, newSel);
-							SetFocus(hDisabledList);
-						}
-					}
-				}
-			}
-			else if (id == IDC_BTN_MASS_ADD) {
-					// Open the existing Mass Add dialog (IDD_MASS_ADD = 1002)
-					DialogBoxParam(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_MASS_ADD),
-								hDlg, MassAddDlgProc, 0);
-					// Refresh the active item list after mass add
-					PopulateItemList(hItemList, g_ItemWatchList);
-				}
-				else if (id == IDC_BTN_DISABLE_ALL) {
-					// Move ALL active items to disabled list
-					SendMessage(hItemList, WM_SETREDRAW, FALSE, 0);   // avoid flicker
-				
-					PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-					while (record) {
-						PUU8 *display = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
-						if (display && *display) {
-							puDoMethod(g_DisabledItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
-							puDoMethod(g_DisabledItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
-							puDoMethod(g_DisabledItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
-						}
-						record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
-					}
-					// Clear active table
-					record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-					while (record) {
-						puDoMethod(g_ItemWatchList, PUM_TABLE_REMRECORD, record, 0);
-						record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-					}
-				
-					SendMessage(hItemList, WM_SETREDRAW, TRUE, 0);    // re‑enable drawing
-					PopulateItemList(hItemList, g_ItemWatchList);
-					PopulateDisabledList(hDisabledList);
-				
-					// Select first item in disabled list (if any)
-					SelectListItemByIndex(hDisabledList, 0);
-					SetFocus(hDisabledList);
-				}
-			else if (id == IDC_BTN_ENABLE_ALL) {
-					// Move ALL disabled items to active list
-					SendMessage(hDisabledList, WM_SETREDRAW, FALSE, 0);
-				
-					PUU32 record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-					while (record) {
-						PUU8 *display = (PUU8*)puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
-						if (display && *display) {
-							puDoMethod(g_ItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
-							puDoMethod(g_ItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
-							puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
-						}
-						record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
-					}
-					// Clear disabled table
-					record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-					while (record) {
-						puDoMethod(g_DisabledItemWatchList, PUM_TABLE_REMRECORD, record, 0);
-						record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-					}
-				
-					SendMessage(hDisabledList, WM_SETREDRAW, TRUE, 0);
-					PopulateItemList(hItemList, g_ItemWatchList);
-					PopulateDisabledList(hDisabledList);
-				
-					// Select first item in active list (if any)
-					SelectListItemByIndex(hItemList, 0);
-					SetFocus(hItemList);
-				}
+                int sel = ListView_GetNextItem(hItemList, -1, LVNI_SELECTED);
+                if (sel >= 0) {
+                    PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+                    for (int i = 0; i < sel && record; i++)
+                        record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
+                    if (record) {
+                        PUU8 *display = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
+                        if (display) {
+                            puDoMethod(g_DisabledItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
+                            puDoMethod(g_DisabledItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
+                            puDoMethod(g_DisabledItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
+                            puDoMethod(g_ItemWatchList, PUM_TABLE_REMRECORD, record, 0);
+                            PopulateItemList(hItemList, g_ItemWatchList);
+                            PopulateDisabledList(hDisabledList);
+                        }
+                    }
+                }
+            }
+            else if (id == IDC_BTN_ENABLE) {
+                int sel = ListView_GetNextItem(hDisabledList, -1, LVNI_SELECTED);
+                if (sel >= 0) {
+                    PUU32 record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+                    for (int i = 0; i < sel && record; i++)
+                        record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
+                    if (record) {
+                        PUU8 *display = (PUU8*)puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
+                        if (display) {
+                            puDoMethod(g_ItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
+                            puDoMethod(g_ItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
+                            puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
+                            puDoMethod(g_DisabledItemWatchList, PUM_TABLE_REMRECORD, record, 0);
+                            PopulateItemList(hItemList, g_ItemWatchList);
+                            PopulateDisabledList(hDisabledList);
+                        }
+                    }
+                }
+            }
             else if (id == IDC_BTN_REMOVE_ALL) {
                 if (MessageBox(hDlg, "Remove ALL items from active list?", "Confirm", MB_YESNO | MB_ICONWARNING) == IDYES) {
                     PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
@@ -3028,6 +2792,99 @@ static INT_PTR CALLBACK ItemEditDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
                 pData->limit = GetDlgItemInt(hDlg, IDC_LIMIT, NULL, FALSE);
                 pData->force = (IsDlgButtonChecked(hDlg, IDC_FORCE) == BST_CHECKED);
                 GetDlgItemTextA(hDlg, IDC_EXCLUDE, pData->exclude, sizeof(pData->exclude));
+                EndDialog(hDlg, IDOK);
+                return TRUE;
+            }
+        case IDCANCEL:
+            EndDialog(hDlg, IDCANCEL);
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
+static INT_PTR CALLBACK MassAddDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg) {
+    case WM_INITDIALOG:
+        SetFocus(GetDlgItem(hDlg, IDC_MASS_EDIT));
+        return FALSE;
+    case WM_COMMAND:
+        switch (LOWORD(wParam)) {
+        case IDOK:
+            {
+                char text[65536];
+                GetDlgItemTextA(hDlg, IDC_MASS_EDIT, text, sizeof(text));
+                char *p = text;
+                char line[1024];
+                int lineIdx;
+                while (*p) {
+                    lineIdx = 0;
+                    while (*p && *p != '\r' && *p != '\n') {
+                        if (lineIdx < (int)sizeof(line)-1) line[lineIdx++] = *p;
+                        p++;
+                    }
+                    line[lineIdx] = '\0';
+                    if (lineIdx == 0) { while (*p == '\r' || *p == '\n') p++; continue; }
+                    char *start = line;
+                    while (*start == ' ' || *start == '\t') start++;
+                    char *end = start + strlen(start) - 1;
+                    while (end > start && (*end == ' ' || *end == '\t')) end--;
+                    *(end + 1) = '\0';
+                    if (*start == '\0') { while (*p == '\r' || *p == '\n') p++; continue; }
+                    // Parse line
+                    char *ptr = start;
+                    int disabled = 0, force = 0;
+                    if (*ptr == '#') { disabled = 1; ptr++; while (*ptr == ' ' || *ptr == '\t') ptr++; }
+                    if (*ptr == '~') { force = 1; ptr++; while (*ptr == ' ' || *ptr == '\t') ptr++; }
+                    char itemName[256] = {0};
+                    int limit = 1;
+                    char excludeWords[256] = {0};
+                    char *nameStart = ptr;
+                    char *nameEnd = nameStart;
+                    while (*nameEnd && *nameEnd != ';' && *nameEnd != '^') nameEnd++;
+                    int nameLen = (int)(nameEnd - nameStart);
+                    if (nameLen >= (int)sizeof(itemName)) nameLen = sizeof(itemName)-1;
+                    strncpy(itemName, nameStart, nameLen);
+                    itemName[nameLen] = '\0';
+                    char *trimEnd = itemName + strlen(itemName) - 1;
+                    while (trimEnd >= itemName && (*trimEnd == ' ' || *trimEnd == '\t')) *trimEnd-- = '\0';
+                    ptr = nameEnd;
+                    if (*ptr == ';') {
+                        ptr++;
+                        limit = atoi(ptr);
+                        if (limit < 0) limit = 0;
+                        while (*ptr && *ptr != ' ' && *ptr != '^') ptr++;
+                    }
+                    while (*ptr) {
+                        while (*ptr == ' ') ptr++;
+                        if (*ptr == '^') {
+                            ptr++;
+                            while (*ptr == ' ') ptr++;
+                            char word[128] = {0};
+                            int wlen = 0;
+                            while (*ptr && *ptr != ' ' && *ptr != '^') {
+                                if (wlen < (int)sizeof(word)-1) word[wlen++] = *ptr;
+                                ptr++;
+                            }
+                            word[wlen] = '\0';
+                            if (wlen > 0) {
+                                if (excludeWords[0] != '\0') strcat(excludeWords, " ");
+                                strcat(excludeWords, word);
+                            }
+                        } else break;
+                    }
+                    if (strlen(itemName) == 0) { while (*p == '\r' || *p == '\n') p++; continue; }
+                    char raw[512];
+                    BuildItemString(raw, sizeof(raw), itemName, disabled, force, limit, excludeWords);
+                    char display[1024];
+                    FormatItemForDisplay(raw, display, sizeof(display));
+                    puDoMethod(g_ItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
+                    puDoMethod(g_ItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
+                    puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
+                    while (*p == '\r' || *p == '\n') p++;
+                }
                 EndDialog(hDlg, IDOK);
                 return TRUE;
             }
