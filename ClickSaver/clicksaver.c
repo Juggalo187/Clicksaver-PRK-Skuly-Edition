@@ -254,6 +254,16 @@ void ParseItemString(const char *src,
     }
 }
 
+static void SetButtonPosDlgUnits(HWND hDlg, int ctrlId, int xDlu, int yDlu)
+{
+    HWND hCtrl = GetDlgItem(hDlg, ctrlId);
+    if (!hCtrl) return;
+    
+    RECT rc = { xDlu, yDlu, xDlu + 50, yDlu + 14 }; // width/height from your .rc (adjust as needed)
+    MapDialogRect(hDlg, &rc);
+    SetWindowPos(hCtrl, NULL, rc.left, rc.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+}
+
 // ========== SUPPORT FUNCTIONS FOR HIDDEN TABS WINDOW ==========
 static void PopulateItemList(HWND hList, PULID table)
 {
@@ -844,6 +854,7 @@ static INT_PTR CALLBACK HiddenTabsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
 						ShowWindow(hTypeHighlightLabel, SW_HIDE);
 						ShowWindow(GetDlgItem(hDlg, IDC_BTN_ENABLE_ALL), SW_HIDE);
 						PopulateItemList(hItemList, g_ItemWatchList);
+						SetButtonPosDlgUnits(hDlg, IDC_BTN_EDIT, 120, 260);
 						break;
 					
 						case 1: // Disabled
@@ -852,6 +863,7 @@ static INT_PTR CALLBACK HiddenTabsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
 							ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE_DISABLED), SW_SHOW);
 							ShowWindow(GetDlgItem(hDlg, IDC_BTN_REMOVE_ALL_DISABLED), SW_SHOW);
 							ShowWindow(GetDlgItem(hDlg, IDC_BTN_ENABLE_ALL), SW_SHOW);
+							ShowWindow(GetDlgItem(hDlg, IDC_BTN_EDIT), SW_SHOW);
 							// Disabled tab – no checkboxes – hide all
 							ShowWindow(GetDlgItem(hDlg, IDC_ITEM_MATCH_CB), SW_HIDE);
 							ShowWindow(GetDlgItem(hDlg, IDC_ITEM_HIGHLIGHT_CB), SW_HIDE);
@@ -870,6 +882,7 @@ static INT_PTR CALLBACK HiddenTabsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
 							ShowWindow(GetDlgItem(hDlg, IDC_BTN_MASS_ADD), SW_HIDE);
 							ShowWindow(GetDlgItem(hDlg, IDC_BTN_DISABLE_ALL), SW_HIDE);
 							PopulateDisabledList(hDisabledList);
+							SetButtonPosDlgUnits(hDlg, IDC_BTN_EDIT, 95, 305);
 							break;
 					
 						case 2: // Locations
@@ -1177,44 +1190,65 @@ static INT_PTR CALLBACK HiddenTabsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
 					}
 				}
             else if (id == IDC_BTN_EDIT) {
-						int sel = ListView_GetNextItem(hItemList, -1, LVNI_SELECTED);
-						if (sel < 0) {
-							MessageBox(hDlg, "No item selected.", "Edit", MB_OK);
-							break;
-						}
-						PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
-						for (int i = 0; i < sel && record; i++)
-							record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
-						if (!record) break;
-						PUU8* oldStr = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
-						if (!oldStr) break;
-					
-						ItemEditData data;
-						memset(&data, 0, sizeof(data));
-					
-						const char *str = (const char*)oldStr;
-						// Check if the string looks like raw format (contains ';' or '^')
-						if (strchr(str, ';') || strchr(str, '^')) {
-							// Raw format: parse with ParseItemString
-							ParseItemString(str, data.itemName, sizeof(data.itemName),
-											&data.disabled, &data.force, &data.limit, data.exclude, sizeof(data.exclude));
-						} else {
-							// Formatted display: parse with ParseDisplayString
-							ParseDisplayString(str, data.itemName, sizeof(data.itemName),
-											&data.disabled, &data.force, &data.limit, data.exclude, sizeof(data.exclude));
-						}
-						data.isAdd = 0;
-					
-						if (ShowItemEditDialog(hDlg, &data, 0)) {
-							char raw[512], newDisplay[1024];
-							BuildItemString(raw, sizeof(raw), data.itemName, data.disabled, data.force, data.limit, data.exclude);
-							FormatItemForDisplay(raw, newDisplay, sizeof(newDisplay));
-							puSetAttribute(g_ItemWatchList, PUA_TABLE_CURRENTFIELD, 0);
-							puSetAttribute(g_ItemWatchList, PUA_TABLE_CURRENTRECORD, record);
-							puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)newDisplay, 0);
-							PopulateItemList(hItemList, g_ItemWatchList);
-						}
+				if (currentTab == 0) {
+					// Edit active item
+					int sel = ListView_GetNextItem(hItemList, -1, LVNI_SELECTED);
+					if (sel < 0) {
+						MessageBox(hDlg, "No item selected.", "Edit", MB_OK);
+						break;
 					}
+					PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+					for (int i = 0; i < sel && record; i++)
+						record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
+					if (!record) break;
+					PUU8* oldStr = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
+					if (!oldStr) break;
+			
+					ItemEditData data;
+					memset(&data, 0, sizeof(data));
+					ParseDisplayString((char*)oldStr, data.itemName, sizeof(data.itemName),
+									&data.disabled, &data.force, &data.limit, data.exclude, sizeof(data.exclude));
+			
+					if (ShowItemEditDialog(hDlg, &data, 0)) {
+						char raw[512], newDisplay[1024];
+						BuildItemString(raw, sizeof(raw), data.itemName, data.disabled, data.force, data.limit, data.exclude);
+						FormatItemForDisplay(raw, newDisplay, sizeof(newDisplay));
+						puSetAttribute(g_ItemWatchList, PUA_TABLE_CURRENTFIELD, 0);
+						puSetAttribute(g_ItemWatchList, PUA_TABLE_CURRENTRECORD, record);
+						puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)newDisplay, 0);
+						PopulateItemList(hItemList, g_ItemWatchList);
+					}
+				}
+				else if (currentTab == 1) {
+					// Edit disabled item
+					int sel = ListView_GetNextItem(hDisabledList, -1, LVNI_SELECTED);
+					if (sel < 0) {
+						MessageBox(hDlg, "No item selected in disabled list.", "Edit", MB_OK);
+						break;
+					}
+					PUU32 record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+					for (int i = 0; i < sel && record; i++)
+						record = puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
+					if (!record) break;
+					PUU8* oldStr = (PUU8*)puDoMethod(g_DisabledItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
+					if (!oldStr) break;
+			
+					ItemEditData data;
+					memset(&data, 0, sizeof(data));
+					ParseDisplayString((char*)oldStr, data.itemName, sizeof(data.itemName),
+									&data.disabled, &data.force, &data.limit, data.exclude, sizeof(data.exclude));
+			
+					if (ShowItemEditDialog(hDlg, &data, 0)) {
+						char raw[512], newDisplay[1024];
+						BuildItemString(raw, sizeof(raw), data.itemName, data.disabled, data.force, data.limit, data.exclude);
+						FormatItemForDisplay(raw, newDisplay, sizeof(newDisplay));
+						puSetAttribute(g_DisabledItemWatchList, PUA_TABLE_CURRENTFIELD, 0);
+						puSetAttribute(g_DisabledItemWatchList, PUA_TABLE_CURRENTRECORD, record);
+						puDoMethod(g_DisabledItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)newDisplay, 0);
+						PopulateDisabledList(hDisabledList);
+					}
+				}
+			}
             else if (id == IDC_BTN_DISABLE) {
 					int sel = ListView_GetNextItem(hItemList, -1, LVNI_SELECTED);
 					if (sel >= 0) {
