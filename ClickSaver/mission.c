@@ -769,6 +769,8 @@ PUU32 MissionSetAttr( PULID _Object, PULID _Class, void* _pData, PUU32 _Attr, PU
 
 PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData )
 {
+	PUU32 bRewardMatched = FALSE;
+	PUU32 bFindItemMatch = FALSE;
 	g_bOverrideMatch = 0;
 	PUU32 bAccept = FALSE;
     char TempStr[ 256 ], CharKey[ 6 ];
@@ -904,11 +906,12 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
 
     // Process items – collect name matches and value matches
     for( i = 0; i < NumItems; i++ ) {
-        PUU32 flags = ShowItem( _pData, pItem++, i + ITEM1, i + ITEMVAL1 );
-        bItemNameMatch |= (flags & 1);
-        bValueMatch |= ((flags >> 1) & 1);
-        TotalValue += _pData->Reward.Value * puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMVALUE_BUYMOD ), PUA_TEXTENTRY_VALUE ) / 100;
-    }
+		PUU32 flags = ShowItem( _pData, pItem++, i + ITEM1, i + ITEMVAL1 );
+		bItemNameMatch |= (flags & 1);
+		bRewardMatched |= (flags & 1);
+		bValueMatch |= ((flags >> 1) & 1);
+		TotalValue += _pData->Reward.Value * puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMVALUE_BUYMOD ), PUA_TEXTENTRY_VALUE ) / 100;
+	}
 
     // Total value highlight and match
     if( !g_BuyingAgentCount || g_bForceUIRefresh )
@@ -938,15 +941,16 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
 	if (TempVal == 0x2c49 || TempVal == 0x26add) {
 		if (MissionFind(pDesc, DescLength, TempStr)) {
 			WriteLog("find\t%s\n", TempStr);
-			// Set context for SetAndSearch
 			g_bIsFindItem = 1;
 			g_bIsReturnMission = (TempVal == 0x26add);
-			g_bRewardMatched = bItemNameMatch;
+			g_bRewardMatched = (PUU8)bRewardMatched;
 			int found = SetAndSearch(TempStr, puGetObjectFromCollection(_pData->pCol, FINDITEM), g_ItemWatchList);
 			g_bIsFindItem = 0;
-			if (found)
+			if (found) {
 				bItemNameMatch = TRUE;
-		} else {
+				bFindItemMatch = TRUE;
+			}
+    }else {
 			puSetAttribute(puGetObjectFromCollection(_pData->pCol, FINDITEM), PUA_TEXTENTRY_BUFFER, 0);
 			TempStr[0] = '\0';
 		}
@@ -978,7 +982,7 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
                 bAccept = bAccept && bValueMatch;
         }
     }
-	
+			
 	        LogMissionDescription(TempVal, TempStr, pDesc, DescLength);
 
     if( bAccept ) {
@@ -1229,6 +1233,7 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
 							continue;
 						}
 					}
+					
 
                 // Build search string for ItemMatch: "cleanName -exclude1 -exclude2"
                 char searchStr[512] = { 0 };
@@ -1247,27 +1252,27 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
 				// Determine whether to count this match for quantity limits
 				int should_count = 1;
 				if (g_bUpdatingCounters && g_bIsFindItem && g_bIsReturnMission && g_bRewardMatched) {
-					should_count = 0;   // skip counting find item when reward already matched in a Return mission
+					should_count = 0;
 				}
 			
 				// Handle quantity limit
 				if( limit > 0 ) {
-					ItemCounter *ic = FindItemCounter( cleanName );
-					if( !ic ) {
-						AddItemCounter( cleanName, limit );
-						ic = FindItemCounter( cleanName );
-					}
-					if( ic ) {
-						if( g_bUpdatingCounters && should_count ) {
-							if (ic->accepted < ic->limit) {
-								ic->accepted++;
+						ItemCounter *ic = FindItemCounter( cleanName );
+						if( !ic ) {
+							AddItemCounter( cleanName, limit );
+							ic = FindItemCounter( cleanName );
+						}
+						if( ic ) {
+							if( g_bUpdatingCounters && should_count ) {
+								if (ic->accepted < ic->limit) {
+									ic->accepted++;
+								}
+							} else if( ic->accepted >= ic->limit ) {
+								Record = puDoMethod( _List, PUM_TABLE_GETNEXTRECORD, Record, 0 );
+								continue;
 							}
-						} else if( ic->accepted >= ic->limit ) {
-							Record = puDoMethod( _List, PUM_TABLE_GETNEXTRECORD, Record, 0 );
-							continue;
 						}
 					}
-				}
                     
                     // Force-accept flag
                     if( force ) {
@@ -1361,25 +1366,25 @@ PUU32 ItemMatch( PUU8* ItemName, PUU8* ItemSearch )
         while( c && !( c == ' ' && !OpenQuoteFlag ) );
 
         if( strlen( TmpString ) )
-        {
-            HadValidString = TRUE;
-
-            if( ExcludeFlag )
-            {
-                if( strstr( ItemName, TmpString ) )
-                {
-                    return FALSE;
-                }
-            }
-            else
-            {
-                if( !strstr( ItemName, TmpString ) )
-                {
-                    return FALSE;
-                }
-            }
-        }
-    }
+			{
+				HadValidString = TRUE;
+			
+				if( ExcludeFlag )
+				{
+					if( strstr( ItemName, TmpString ) )
+					{
+						return FALSE;
+					}
+				}
+				else
+				{
+					if( !strstr( ItemName, TmpString ) )
+					{
+						return FALSE;
+					}
+				}
+			}
+		}
     while( c );
 
     return HadValidString;

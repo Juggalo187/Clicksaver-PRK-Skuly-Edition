@@ -3019,7 +3019,6 @@ void ExportSettings( char* filename )
     fclose( fp );
 }
 
-
 void DisplayErrorMessage( PUU8* _pMessage, PUU32 _bAsynchronous )
 {
     puSetAttribute( puGetObjectFromCollection( g_pCol, CS_ERROR_TEXT ), PUA_TEXT_STRING, (PUU32)_pMessage );
