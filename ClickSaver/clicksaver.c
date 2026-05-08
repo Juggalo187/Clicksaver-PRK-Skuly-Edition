@@ -728,7 +728,10 @@ static INT_PTR CALLBACK MassAddDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARA
                 {
                     ptr++;
                     limit = atoi(ptr);
-                    if (limit < 0) limit = 0;
+					if (limit < 0) limit = 0;
+					if (limit == 0) {
+						limit = 1;
+					}
                     while (*ptr && *ptr != ' ' && *ptr != '^') ptr++;
                 }
 
@@ -1338,31 +1341,44 @@ static void ImportItemsFromFile(const char *filename, int replaceMode) {
         line[strcspn(line, "\r\n")] = 0;
 
         if (strcmp(line, "::ItemWatch::") == 0) {
-            inItemSection = 1;
-            continue;
-        }
-        if (strcmp(line, "::END::") == 0 || strncmp(line, "::", 2) == 0)
-            break;
-        if (!inItemSection) continue;
-
-        // Skip empty lines
-        if (strlen(line) == 0) continue;
-
-        // Convert raw line to display string
-        char display[1024];
-        MakeTableEntry(display, sizeof(display), line);
-
-        // Duplicate check (only for append mode; replace already cleared list)
-        if (!replaceMode && ItemExistsInActiveList(display)) {
-            duplicateCount++;
-            continue;
-        }
-
-        // Add item
-        puDoMethod(g_ItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
-        puDoMethod(g_ItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
-        puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
-        addedCount++;
+    inItemSection = 1;
+    continue;
+		}
+		// Skip empty lines
+		if (strlen(line) == 0) continue;
+		
+		// Parse raw line into fields
+		char itemName[256];
+		int disabled = 0, force = 0, limit = 0;
+		char exclude[256];
+		ParseItemString(line, itemName, sizeof(itemName),
+						&disabled, &force, &limit, exclude, sizeof(exclude));
+		
+		// Default to quantity 1 if no limit was specified
+		if (limit == 0) {
+			limit = 1;
+		}
+		
+		// Rebuild raw string with enforced limit
+		char rawWithLimit[512];
+		BuildItemString(rawWithLimit, sizeof(rawWithLimit),
+						itemName, disabled, force, limit, exclude);
+		
+		// Convert to display string
+		char display[1024];
+		MakeTableEntry(display, sizeof(display), rawWithLimit);
+		
+		// Duplicate check (only for append mode; replace already cleared list)
+		if (!replaceMode && ItemExistsInActiveList(display)) {
+			duplicateCount++;
+			continue;
+		}
+		
+		// Add item
+		puDoMethod(g_ItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
+		puDoMethod(g_ItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
+		puDoMethod(g_ItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)display, 0);
+		addedCount++;
     }
     fclose(fp);
 
