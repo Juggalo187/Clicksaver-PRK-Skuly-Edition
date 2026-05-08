@@ -384,7 +384,6 @@ PUU8 g_bOverrideMatch = 0;
 
 extern PUU8 g_bUpdatingCounters;
 extern PUU8 g_bForceUIRefresh;
-PUU8 g_bCountFindItemOnlyIfNoRewardMatch = 0;
 
 /* AOMD functions */
 PUU8 GetAODBItem( MissionItem* _pMissionItem, PUU32 _ItemKey );
@@ -871,11 +870,8 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     WriteLog( "loc\t%u\t%.1f\t%.1f\t%s\n", MishPF, CoordX, CoordY, PFName );
 
     // Process items – collect name matches and value matches
-        // Process items – collect name matches and value matches
-    int rewardMatched = 0;
     for( i = 0; i < NumItems; i++ ) {
         PUU32 flags = ShowItem( _pData, pItem++, i + ITEM1, i + ITEMVAL1 );
-        if (flags & 1) rewardMatched = 1;
         bItemNameMatch |= (flags & 1);
         bValueMatch |= ((flags >> 1) & 1);
         TotalValue += _pData->Reward.Value * puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMVALUE_BUYMOD ), PUA_TEXTENTRY_VALUE ) / 100;
@@ -909,15 +905,8 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     if (TempVal == 0x2c49 || TempVal == 0x26add) {
         if (MissionFind(pDesc, DescLength, TempStr)) {
             WriteLog("find\t%s\n", TempStr);
-            // For Return Item missions, set flag to skip counter if reward already matched
-            if (TempVal == 0x26add) {
-                g_bCountFindItemOnlyIfNoRewardMatch = rewardMatched ? 1 : 0;
-            } else {
-                g_bCountFindItemOnlyIfNoRewardMatch = 0; // Find Item – always count
-            }
             if (SetAndSearch(TempStr, puGetObjectFromCollection(_pData->pCol, FINDITEM), g_ItemWatchList))
                 bItemNameMatch = TRUE;
-            g_bCountFindItemOnlyIfNoRewardMatch = 0; // reset
         } else {
             puSetAttribute(puGetObjectFromCollection(_pData->pCol, FINDITEM), PUA_TEXTENTRY_BUFFER, 0);
             TempStr[0] = '\0';
@@ -1207,33 +1196,30 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
                 searchStr[0] = '\0';
                 strncat(searchStr, cleanName, sizeof(searchStr)-1);
                 if (excludeWords[0]) {
-					char *tok = strtok(excludeWords, " ");
-					while (tok) {
-						strncat(searchStr, " ^", sizeof(searchStr)-strlen(searchStr)-2);
-						strncat(searchStr, tok, sizeof(searchStr)-strlen(searchStr)-1);
-						tok = strtok(NULL, " ");
-					}
-				}
+                    char *tok = strtok(excludeWords, " ");
+                    while (tok) {
+                        strncat(searchStr, " ^", sizeof(searchStr)-strlen(searchStr)-2);
+                        strncat(searchStr, tok, sizeof(searchStr)-strlen(searchStr)-1);
+                        tok = strtok(NULL, " ");
+                    }
+                }
 
                 if( ItemMatch( TmpItemName, (PUU8*)searchStr ) ) {
                     // Handle quantity limit
-                       if( limit > 0 ) {
-                        // Skip counter update if this is a return-item find‑item with a reward match
-                        if (!g_bCountFindItemOnlyIfNoRewardMatch) {
-                            ItemCounter *ic = FindItemCounter( cleanName );
-                            if( !ic ) {
-                                AddItemCounter( cleanName, limit );
-                                ic = FindItemCounter( cleanName );
-                            }
-                            if( ic ) {
-                                if( g_bUpdatingCounters ) {
-                                    if (ic->accepted < ic->limit) {
-                                        ic->accepted++;
-                                    }
-                                } else if( ic->accepted >= ic->limit ) {
-                                    Record = puDoMethod( _List, PUM_TABLE_GETNEXTRECORD, Record, 0 );
-                                    continue;
+                    if( limit > 0 ) {
+                        ItemCounter *ic = FindItemCounter( cleanName );
+                        if( !ic ) {
+                            AddItemCounter( cleanName, limit );
+                            ic = FindItemCounter( cleanName );
+                        }
+                        if( ic ) {
+                            if( g_bUpdatingCounters ) {
+                                if (ic->accepted < ic->limit) {
+                                    ic->accepted++;
                                 }
+                            } else if( ic->accepted >= ic->limit ) {
+                                Record = puDoMethod( _List, PUM_TABLE_GETNEXTRECORD, Record, 0 );
+                                continue;
                             }
                         }
                     }
@@ -1314,9 +1300,9 @@ PUU32 ItemMatch( PUU8* ItemName, PUU8* ItemSearch )
                 }
             }
             else if( c == '^' && pChar == TmpString )
-			{
-				ExcludeFlag = TRUE;
-			}
+            {
+                ExcludeFlag = TRUE;
+            }
             else if( c != ' ' || OpenQuoteFlag )
             {
                 *pChar++ = c;

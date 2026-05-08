@@ -74,6 +74,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <windowsx.h>
 #include "clicksaver.h"
 #include "resource.h"
+
 #include <ctype.h>
 #include <shellapi.h>   
 #include <uxtheme.h>
@@ -489,7 +490,7 @@ INT_PTR CALLBACK ItemEditDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPar
 			
 				// If editing an existing item and the name hasn't changed, skip validation
 				if (!pData->isAdd && strcmp(start, pData->itemName) == 0) {
-					// Name unchanged – just keep existing quantity/force/exclude
+					// Name unchanged â just keep existing quantity/force/exclude
 					// (No need to validate, just save as is)
 					strcpy(pData->itemName, start);
 					pData->limit = GetDlgItemInt(hDlg, IDC_LIMIT, NULL, FALSE);
@@ -535,7 +536,7 @@ INT_PTR CALLBACK ItemEditDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPar
 					}
 				}
 				else if (matchCount <= MATCH_AUTO_THRESHOLD) {
-					// Silent accept – use typed name as is
+					// Silent accept â use typed name as is
 				}
 				else {
 					// Save current limit, force, exclude before showing match list
@@ -2409,17 +2410,16 @@ if (!LoadItemNameCache(cachePath)) {
 
             _setSliders( easy_hard, good_bad, order_chaos, open_hidden, phys_myst, headon_stealth, money_xp );
         }
-        break;
-		case 5001:
-		{
-			PULID listView = (PULID)pAppMsg->Param;
-			if (listView == puGetObjectFromCollection(g_pCol, CS_ITEMWATCH_LISTVIEW))
-				EditActiveItem();
-			else if (listView == puGetObjectFromCollection(g_pCol, CS_DISABLED_ITEMWATCH_LISTVIEW))
-				EditDisabledItem();
-			break;
-		}
-		
+		break;
+			case 5001:
+			{
+				PULID listView = (PULID)pAppMsg->Param;
+				if (listView == puGetObjectFromCollection(g_pCol, CS_ITEMWATCH_LISTVIEW))
+					EditActiveItem();
+				else if (listView == puGetObjectFromCollection(g_pCol, CS_DISABLED_ITEMWATCH_LISTVIEW))
+					EditDisabledItem();
+				break;
+			}
 		
         }
         stop_buying_agent:;

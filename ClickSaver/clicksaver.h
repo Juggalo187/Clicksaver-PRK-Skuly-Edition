@@ -16,7 +16,6 @@
 #define AODB_TYP_ITEM       1000020
 #define AODB_TYP_ICON       1010008
 #define AODB_TYP_PF         1000001
-extern PUU8 g_bCountFindItemOnlyIfNoRewardMatch;
 
 // GUI object IDs
 enum
