@@ -26,6 +26,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <zlib.h>
 #include <ctype.h>
 #include "ClickSaver.h"
+#include "excluded_items.h"
 
 static char **g_itemNames = NULL;
 static size_t g_numItemNames = 0;
@@ -36,6 +37,16 @@ extern PULID g_DisabledItemWatchList;
 extern sqlite3* g_pSQLite;
 
 //#define DEBUG_MISSION_PACKETS 1
+
+// Check if an item name is in the compiled exclusion list
+static int IsItemExcluded(const char *name) {
+    if (!name || !*name) return 0;
+    for (unsigned int i = 0; i < g_num_excluded_items; i++) {
+        if (strcmp(name, g_excluded_items[i]) == 0)
+            return 1;
+    }
+    return 0;
+}
 
 static const char* g_common_items[] = {
     "Contained Sensitive Information",
@@ -149,6 +160,92 @@ static int is_duplicate(const char *name, char **seen, int *seen_count) {
     return 0;
 }
 
+static int ShouldSkipItemName(const char *name) {
+    if (!name || !*name) return 1;
+
+    // List of substrings to exclude (case-insensitive)
+    const char *skip_patterns[] = {
+        "Photon Particle Emitter",
+        "Hacked",
+        "Compiled Algorithm",
+        "Instruction Disc",
+        "Weird Looking",
+        "Kyr'Ozch",
+		"Shadow Crystal",
+		"Corroded Crystal",
+		"Miy's",
+		"Charged Nano Crystal",
+		"Enduring Armor",
+		"Symbiant,",
+		"Spirit",
+		"Fashion Kit",
+		"Construction Kit",
+		"Construction Manual",
+		"Equip_",
+		"Equip ",
+		"Wpn Pri",
+		"Buff Can",
+		"Skill NCU",
+		"Abilities NCU",
+		"Nano NCU",
+		"NCU - Type",
+		"Type 1",
+		"Bracelet of ",
+		"Notum Crystal",
+		"Novictalized",
+		"Pattern of",
+		"Pattern '",
+		"Etched Pattern",
+		" for ",
+		"backpack",
+		"Yalmaha",
+		" Device",
+		" Corroded",
+		"Container",
+		"Ruby",
+		"Perfectly Cut",
+		"Small",
+		"Amber",
+		"Nano Buff",
+		"Tower",
+		"Controller",
+		"Funneling",
+		"Book",
+		"Cracked Crystal",
+		"Cracked Arbiter",
+		"Jewel",
+        NULL
+    };
+
+    // Convert name to lowercase for case-insensitive matching
+    char lowerName[256];
+    size_t i;
+    for (i = 0; name[i] && i < sizeof(lowerName)-1; i++) {
+        lowerName[i] = tolower((unsigned char)name[i]);
+    }
+    lowerName[i] = '\0';
+
+    for (int p = 0; skip_patterns[p] != NULL; p++) {
+        // Convert pattern to lowercase as well
+        char lowerPattern[256];
+        size_t j;
+        for (j = 0; skip_patterns[p][j] && j < sizeof(lowerPattern)-1; j++) {
+            lowerPattern[j] = tolower((unsigned char)skip_patterns[p][j]);
+        }
+        lowerPattern[j] = '\0';
+
+        if (strstr(lowerName, lowerPattern) != NULL) {
+            return 1; // skip this item
+        }
+    }
+	
+	// NEW: check the compiled exclusion list
+    if (IsItemExcluded(name))
+        return 1;
+	
+    return 0; // keep item
+}
+
 void BuildItemNameCache(const char *filename) {
     sqlite3_stmt *stmt;
     const char *sql = "SELECT data FROM rdb_1000020";
@@ -165,6 +262,9 @@ void BuildItemNameCache(const char *filename) {
         int blobSize = sqlite3_column_bytes(stmt, 0);
         char name[256];
         if (ExtractItemNameFromBlob(blob, blobSize, name, sizeof(name))) {
+			if (ShouldSkipItemName(name)) {
+                continue;
+            }
             size_t len = strlen(name) + 1;
             if (total_len + len > capacity) {
                 capacity *= 2;
@@ -420,6 +520,10 @@ static const char *container_prefixes[] = {
     "blister pack with",
     "symbio-graft:",
     "charged nano finger",
+	"finger with",
+	"boosted-graft",
+	"charged nano critter",
+	"ofab",
     NULL
 };
 
@@ -1472,8 +1576,9 @@ int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, con
     *outCount = 0;
     if (!g_itemNames || !baseName || !*baseName) return 0;
 
-    // Build the full search string (same as before: baseName + " ^" + exclude words)
-    char fullSearch[512];
+    // Build the full search string the same way as the real scanner:
+    //   baseName + " " + " ^" + excludeWord for each exclude word
+    char fullSearch[1024];
     strcpy(fullSearch, baseName);
     if (excludeWords && *excludeWords) {
         char excludeCopy[256];
@@ -1490,24 +1595,21 @@ int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, con
         }
     }
 
-    // Helper: case‑insensitive substring
-    #define stristr(haystack, needle) strstr(haystack, needle) // we'll lower case both
-
-    // For each database name, we need to parse the fullSearch into tokens.
-    int capacity = 0;
-    int count = 0;
-    const char **items = NULL;
-
-    // Pre‑process fullSearch into an array of tokens (with exclude flag)
-    // We'll parse it once per call, not per item, for efficiency.
-    char searchCopy[512];
-    strcpy(searchCopy, fullSearch);
-    char *tokens[64];
-    int excludeFlag[64];
+    // Parse fullSearch into tokens (same algorithm as ItemMatch)
+    // We'll store tokens with an "exclude" flag.
+    struct Token {
+        char text[256];
+        int exclude;
+    };
+    struct Token tokens[64];
     int numTokens = 0;
+    
+    char searchCopy[1024];
+    strcpy(searchCopy, fullSearch);
     char *p = searchCopy;
     int inQuote = 0;
     char *tokenStart = NULL;
+    
     while (*p) {
         if (*p == '"') {
             inQuote = !inQuote;
@@ -1517,17 +1619,24 @@ int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, con
         if (!inQuote && (*p == ' ' || *p == '\t')) {
             if (tokenStart) {
                 *p = '\0';
-                // token from tokenStart to p-1
                 char *tok = tokenStart;
-                if (tok[0] == '-') {
-                    excludeFlag[numTokens] = 1;
-                    tok++; // skip the '-'
-                } else {
-                    excludeFlag[numTokens] = 0;
+                int exclude = 0;
+                if (tok[0] == '^') {
+                    exclude = 1;
+                    tok++; // skip the caret
                 }
-                // lower case the token for comparison
-                for (char *c = tok; *c; c++) *c = tolower((unsigned char)*c);
-                tokens[numTokens++] = tok;
+                // Convert token to lowercase for later case‑insensitive search
+                char lowerTok[256];
+                int i;
+                for (i = 0; tok[i] && i < (int)sizeof(lowerTok)-1; i++) {
+                    lowerTok[i] = tolower((unsigned char)tok[i]);
+                }
+                lowerTok[i] = '\0';
+                if (i > 0) {
+                    strcpy(tokens[numTokens].text, lowerTok);
+                    tokens[numTokens].exclude = exclude;
+                    numTokens++;
+                }
                 tokenStart = NULL;
             }
             p++;
@@ -1538,62 +1647,89 @@ int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, con
     }
     if (tokenStart) {
         char *tok = tokenStart;
-        if (tok[0] == '-') {
-            excludeFlag[numTokens] = 1;
+        int exclude = 0;
+        if (tok[0] == '^') {
+            exclude = 1;
             tok++;
-        } else {
-            excludeFlag[numTokens] = 0;
         }
-        for (char *c = tok; *c; c++) *c = tolower((unsigned char)*c);
-        tokens[numTokens++] = tok;
+        char lowerTok[256];
+        int i;
+        for (i = 0; tok[i] && i < (int)sizeof(lowerTok)-1; i++) {
+            lowerTok[i] = tolower((unsigned char)tok[i]);
+        }
+        lowerTok[i] = '\0';
+        if (i > 0) {
+            strcpy(tokens[numTokens].text, lowerTok);
+            tokens[numTokens].exclude = exclude;
+            numTokens++;
+        }
     }
-
-    // If nothing to search, return 0
+    
+    // If no tokens (only spaces or empty), nothing matches
     if (numTokens == 0) return 0;
-
-    // Now iterate through database items
+    
+    // Count how many required tokens (non‑exclude) we have
+    int requiredCount = 0;
+    for (int i = 0; i < numTokens; i++) {
+        if (!tokens[i].exclude) requiredCount++;
+    }
+    if (requiredCount == 0) return 0;   // only exclusions – never matches anything
+    
+    // Now iterate over all item names from the cache
+    int capacity = 0;
+    int count = 0;
+    const char **items = NULL;
+    
     for (size_t i = 0; i < g_numItemNames; i++) {
         const char *dbName = g_itemNames[i];
+        // Convert dbName to lowercase once
         char lowerDb[256];
-        size_t k;
-        for (k = 0; dbName[k] && k < sizeof(lowerDb)-1; k++)
-            lowerDb[k] = tolower((unsigned char)dbName[k]);
-        lowerDb[k] = '\0';
-
+        size_t j;
+        for (j = 0; dbName[j] && j < sizeof(lowerDb)-1; j++) {
+            lowerDb[j] = tolower((unsigned char)dbName[j]);
+        }
+        lowerDb[j] = '\0';
+        
         int match = 1;
         for (int t = 0; t < numTokens; t++) {
-            if (excludeFlag[t]) {
+            if (tokens[t].exclude) {
                 // Exclusion token must NOT be found
-                if (strstr(lowerDb, tokens[t]) != NULL) {
+                if (strstr(lowerDb, tokens[t].text) != NULL) {
                     match = 0;
                     break;
                 }
             } else {
-                // Normal token must be found
-                if (strstr(lowerDb, tokens[t]) == NULL) {
+                // Required token must be found
+                if (strstr(lowerDb, tokens[t].text) == NULL) {
                     match = 0;
                     break;
                 }
             }
         }
         if (!match) continue;
-
-        // Duplicate check
+        
+        // Duplicate check (should not happen with proper cache, but safe)
         int dup = 0;
-        for (int j = 0; j < count; j++) {
-            if (strcmp(items[j], dbName) == 0) { dup = 1; break; }
+        for (int k = 0; k < count; k++) {
+            if (strcmp(items[k], dbName) == 0) {
+                dup = 1;
+                break;
+            }
         }
         if (dup) continue;
-
+        
         if (count >= capacity) {
             capacity = capacity ? capacity * 2 : 32;
             const char **newItems = realloc(items, capacity * sizeof(const char*));
-            if (!newItems) { free(items); return 0; }
+            if (!newItems) {
+                free(items);
+                return 0;
+            }
             items = newItems;
         }
         items[count++] = dbName;
     }
-
+    
     if (count > 0) {
         *outItems = items;
         *outCount = count;

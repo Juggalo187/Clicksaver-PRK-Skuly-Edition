@@ -24,6 +24,9 @@
     <ClCompile Include="sqlite3.c">
       <Filter>Source</Filter>
     </ClCompile>
+    <ClCompile Include="excluded_items.c">
+      <Filter>Source</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="clicksaver.h">
@@ -41,6 +44,7 @@
     <ClInclude Include="sqlite3.h">
       <Filter>Source</Filter>
     </ClInclude>
+    <ClInclude Include="excluded_items.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="ClickSaver.rc">

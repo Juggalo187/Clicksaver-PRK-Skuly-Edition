@@ -85,7 +85,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "comctl32.lib")
 
-#define MATCH_AUTO_THRESHOLD 5
+#define MATCH_AUTO_THRESHOLD 1
 
 // SQLite Globals
 sqlite3*      g_pSQLite = NULL;
@@ -515,8 +515,7 @@ INT_PTR CALLBACK ItemEditDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPar
 			
 				// If editing an existing item and the name hasn't changed, skip validation
 				if (!pData->isAdd && strcmp(start, pData->itemName) == 0) {
-					// Name unchanged â just keep existing quantity/force/exclude
-					// (No need to validate, just save as is)
+					// Name unchanged – just keep existing quantity/force/exclude
 					strcpy(pData->itemName, start);
 					pData->limit = GetDlgItemInt(hDlg, IDC_LIMIT, NULL, FALSE);
 					pData->force = (IsDlgButtonChecked(hDlg, IDC_FORCE) == BST_CHECKED);
@@ -524,9 +523,30 @@ INT_PTR CALLBACK ItemEditDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPar
 					EndDialog(hDlg, IDOK);
 					return TRUE;
 				}
-				
+			
+				// ---- NEW: Strip surrounding double quotes for cache search ----
+				char searchName[256];
+				strcpy(searchName, start);
+				int hasQuotes = 0;
+				size_t len = strlen(searchName);
+				if (len >= 2 && searchName[0] == '"' && searchName[len-1] == '"') {
+					hasQuotes = 1;
+					// Remove the quotes
+					memmove(searchName, searchName + 1, len - 2);
+					searchName[len - 2] = '\0';
+					// Trim again (in case of spaces inside quotes? Usually not, but safe)
+					char *qstart = searchName;
+					while (*qstart == ' ') qstart++;
+					char *qend = qstart + strlen(qstart) - 1;
+					while (qend > qstart && *qend == ' ') qend--;
+					*(qend + 1) = '\0';
+					if (qstart != searchName) memmove(searchName, qstart, qend - qstart + 2);
+				}
+				// ------------------------------------------------------------
+			
+				// Normalize: convert dashes and collapse spaces (same as before)
 				char normalized[256];
-				strcpy(normalized, start);
+				strcpy(normalized, searchName);
 				for (char *p = normalized; *p; p++) {
 					if (*p == '-') {
 						if ((p == normalized || *(p-1) == ' ') && (*(p+1) == ' ' || *(p+1) == '\0')) {
@@ -561,7 +581,7 @@ INT_PTR CALLBACK ItemEditDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPar
 					}
 				}
 				else if (matchCount <= MATCH_AUTO_THRESHOLD) {
-					// Silent accept â use typed name as is
+					// Silent accept – use typed name as is
 				}
 				else {
 					// Save current limit, force, exclude before showing match list
@@ -581,7 +601,9 @@ INT_PTR CALLBACK ItemEditDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPar
 					INT_PTR result = DialogBoxParam(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_MATCH_LIST),
 													hDlg, MatchListDlgProc, (LPARAM)&data);
 					if (result == IDOK && data.selected[0] != '\0') {
+						// User selected an item from the list – use that exact name (without quotes)
 						strcpy(start, data.selected);
+						hasQuotes = 0;  // Selected item is not quoted
 						SetDlgItemTextA(hDlg, IDC_ITEM_NAME, start);
 						// Restore saved limit, force, exclude
 						SetDlgItemInt(hDlg, IDC_LIMIT, savedLimit, FALSE);
@@ -595,8 +617,17 @@ INT_PTR CALLBACK ItemEditDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPar
 				}
 				free((void*)matches);
 			
-				// Save final values
-				strcpy(pData->itemName, start);
+				// Save final values – if the user originally entered quotes, preserve them
+				// But if we went through the match list and selected an exact name, we lose the quotes.
+				// That's intended because the exact name doesn't need quotes.
+				if (hasQuotes && strlen(start) > 0 && start[0] != '"') {
+					// Re‑add quotes since the user wanted an exact phrase match
+					char quoted[256];
+					snprintf(quoted, sizeof(quoted), "\"%s\"", start);
+					strcpy(pData->itemName, quoted);
+				} else {
+					strcpy(pData->itemName, start);
+				}
 				pData->limit = GetDlgItemInt(hDlg, IDC_LIMIT, NULL, FALSE);
 				pData->force = (IsDlgButtonChecked(hDlg, IDC_FORCE) == BST_CHECKED);
 				GetDlgItemTextA(hDlg, IDC_EXCLUDE, pData->exclude, sizeof(pData->exclude));
@@ -1802,12 +1833,35 @@ int main( int argc, char** argv )
 	
 char cachePath[MAX_PATH];
 sprintf(cachePath, "%s\\ItemNames.db", g_CSDir);
-if (!LoadItemNameCache(cachePath)) {
-    //MessageBox(NULL, "Building item name cache (one-time operation).\nPlease wait...", "ClickSaver", MB_OK);
-    BuildItemNameCache(cachePath);
-    if (!LoadItemNameCache(cachePath)) {
-        //MessageBox(NULL, "Warning: Could not build or load item name cache.\nShort item names will not be filtered.", "ClickSaver", MB_OK);
+
+int needRebuild = 0;
+HANDLE hCache = CreateFileA(cachePath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+if (hCache == INVALID_HANDLE_VALUE) {
+    needRebuild = 1;
+} else {
+    // Get executable path
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(NULL, exePath, MAX_PATH);
+    HANDLE hExe = CreateFileA(exePath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (hExe != INVALID_HANDLE_VALUE) {
+        FILETIME ftCache, ftExe;
+        GetFileTime(hCache, NULL, NULL, &ftCache);
+        GetFileTime(hExe, NULL, NULL, &ftExe);
+        if (CompareFileTime(&ftExe, &ftCache) > 0)
+            needRebuild = 1;
+        CloseHandle(hExe);
     }
+    CloseHandle(hCache);
+}
+
+if (needRebuild) {
+    DeleteFileA(cachePath);
+    BuildItemNameCache(cachePath);
+}
+if (!LoadItemNameCache(cachePath)) {
+    // Fallback: build cache if loading failed
+    BuildItemNameCache(cachePath);
+    LoadItemNameCache(cachePath);
 }
 
     MissionControls[ 0 ] = puGetObjectFromCollection( g_pCol, CS_MISSION1 );

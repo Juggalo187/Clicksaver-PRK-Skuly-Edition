@@ -115,6 +115,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="clicksaver.c" />
+    <ClCompile Include="excluded_items.c" />
     <ClCompile Include="guidef.c" />
     <ClCompile Include="hook.cpp" />
     <ClCompile Include="mission.c" />
@@ -122,6 +123,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="clicksaver.h" />
+    <ClInclude Include="excluded_items.h" />
     <ClInclude Include="mission.h" />
     <ClInclude Include="Platform.h" />
     <ClInclude Include="resource.h" />
