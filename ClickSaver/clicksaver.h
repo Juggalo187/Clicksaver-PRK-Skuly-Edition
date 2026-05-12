@@ -180,9 +180,12 @@ extern PUU8 g_bFullscreen;
 extern PUU32 g_GUIDef[];
 extern PUU8 g_bBuyingAgentActive;
 void addLocationStat(const char *pfName, int pfId, double x, double y);
+void safe_strcpy(char *dest, size_t dest_size, const char *src);
+void safe_strcat(char *dest, size_t dest_size, const char *src);
 int IsWatchlistEntryValid(const char *searchStr);
 int GetMatchingItems(const char *searchStr, const char ***outItems, int *outCount);
 int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, const char ***outItems, int *outCount);
+
 
 // Endianness macros
 #define EndianSwap16(x) ( ( x ) >> 8 | ( x ) << 8 )

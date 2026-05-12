@@ -631,7 +631,8 @@ static const char *container_prefixes[] = {
     "blister pack with",
     "symbio-graft:",
     "charged nano finger",
-	"finger with",
+	"finger with ",
+	"pill with ",
 	"boosted-graft",
 	"charged nano critter",
 	"ofab",
@@ -989,7 +990,7 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
 	PUU32 bFindItemMatch = FALSE;
 	g_bOverrideMatch = 0;
 	PUU32 bAccept = FALSE;
-    char TempStr[ 256 ], CharKey[ 6 ];
+    char TempStr[256], CharKey[6] = {0};
     char PFName[ 256 ] = { 0 };
     float CoordX = { 0 }, CoordY = { 0 };
     PUU32 TempVal, MishPF;
@@ -1109,7 +1110,7 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     *(PUU32*)(&CoordX) = TempVal;
     TempVal = EndianSwap32( *(PUU32*)(_pMissionData + 0xbc) );
     *(PUU32*)(&CoordY) = TempVal;
-    sprintf( TempStr, "%s (%.1f, %.1f)", PFName, CoordX, CoordY );
+    snprintf(TempStr, sizeof(TempStr), "%s (%.1f, %.1f)", PFName, CoordX, CoordY);
     if (g_bBuyingAgentActive) {
 		addLocationStat(PFName, MishPF, CoordX, CoordY);
 	}
@@ -1690,139 +1691,128 @@ int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, con
     *outCount = 0;
     if (!g_itemNames || !baseName || !*baseName) return 0;
 
-    // Build the full search string the same way as the real scanner:
-    //   baseName + " " + " ^" + excludeWord for each exclude word
+    // ----- Build fullSearch safely -----
     char fullSearch[1024];
-    strcpy(fullSearch, baseName);
+    int written = snprintf(fullSearch, sizeof(fullSearch), "%s", baseName);
+    if (written < 0 || (size_t)written >= sizeof(fullSearch)) {
+        // Truncation, but we continue with what we have
+    }
+
     if (excludeWords && *excludeWords) {
         char excludeCopy[256];
-        strncpy(excludeCopy, excludeWords, sizeof(excludeCopy)-1);
-        excludeCopy[sizeof(excludeCopy)-1] = '\0';
+        strncpy(excludeCopy, excludeWords, sizeof(excludeCopy) - 1);
+        excludeCopy[sizeof(excludeCopy) - 1] = '\0';
         char *tok = strtok(excludeCopy, ", ");
+        size_t curLen = strlen(fullSearch);
         while (tok) {
             while (*tok == ' ') tok++;
             if (*tok) {
-                strcat(fullSearch, " ^");
-                strcat(fullSearch, tok);
+                int added = snprintf(fullSearch + curLen, sizeof(fullSearch) - curLen, " ^%s", tok);
+                if (added > 0 && (size_t)added < sizeof(fullSearch) - curLen)
+                    curLen += added;
             }
             tok = strtok(NULL, ", ");
         }
     }
 
-    // Parse fullSearch into tokens (same algorithm as ItemMatch)
-    // We'll store tokens with an "exclude" flag.
+    // ----- Tokenize without modifying the string -----
     struct Token {
         char text[256];
         int exclude;
     };
     struct Token tokens[64];
     int numTokens = 0;
-    
-    char searchCopy[1024];
-    strcpy(searchCopy, fullSearch);
-    char *p = searchCopy;
+
+    const char *p = fullSearch;
     int inQuote = 0;
-    char *tokenStart = NULL;
-    
+    char tokenBuf[256];
+    int tokenLen = 0;
+    int excludeFlag = 0;
+
     while (*p) {
-        if (*p == '"') {
+        char c = *p;
+
+        // Handle quotes
+        if (c == '"') {
             inQuote = !inQuote;
             p++;
             continue;
         }
-        if (!inQuote && (*p == ' ' || *p == '\t')) {
-            if (tokenStart) {
-                *p = '\0';
-                char *tok = tokenStart;
-                int exclude = 0;
-                if (tok[0] == '^') {
-                    exclude = 1;
-                    tok++; // skip the caret
-                }
-                // Convert token to lowercase for later case‑insensitive search
-                char lowerTok[256];
-                int i;
-                for (i = 0; tok[i] && i < (int)sizeof(lowerTok)-1; i++) {
-                    lowerTok[i] = tolower((unsigned char)tok[i]);
-                }
-                lowerTok[i] = '\0';
-                if (i > 0) {
-                    strcpy(tokens[numTokens].text, lowerTok);
-                    tokens[numTokens].exclude = exclude;
-                    numTokens++;
-                }
-                tokenStart = NULL;
+
+        // Handle delimiters (space or tab) only when not inside quotes
+        if (!inQuote && (c == ' ' || c == '\t')) {
+            if (tokenLen > 0) {
+                tokenBuf[tokenLen] = '\0';
+                // Convert token to lowercase
+                for (int i = 0; i < tokenLen; i++)
+                    tokenBuf[i] = tolower((unsigned char)tokenBuf[i]);
+                strncpy(tokens[numTokens].text, tokenBuf, sizeof(tokens[numTokens].text) - 1);
+                tokens[numTokens].text[sizeof(tokens[numTokens].text) - 1] = '\0';
+                tokens[numTokens].exclude = excludeFlag;
+                numTokens++;
+                tokenLen = 0;
+                excludeFlag = 0;
             }
             p++;
             continue;
         }
-        if (!tokenStart) tokenStart = p;
+
+        // Start of a token
+        if (tokenLen == 0 && !inQuote && c == '^') {
+            excludeFlag = 1;
+            p++;
+            continue;
+        }
+
+        // Accumulate character
+        if (tokenLen < (int)sizeof(tokenBuf) - 1) {
+            tokenBuf[tokenLen++] = c;
+        }
         p++;
     }
-    if (tokenStart) {
-        char *tok = tokenStart;
-        int exclude = 0;
-        if (tok[0] == '^') {
-            exclude = 1;
-            tok++;
-        }
-        char lowerTok[256];
-        int i;
-        for (i = 0; tok[i] && i < (int)sizeof(lowerTok)-1; i++) {
-            lowerTok[i] = tolower((unsigned char)tok[i]);
-        }
-        lowerTok[i] = '\0';
-        if (i > 0) {
-            strcpy(tokens[numTokens].text, lowerTok);
-            tokens[numTokens].exclude = exclude;
-            numTokens++;
-        }
+
+    // Last token
+    if (tokenLen > 0) {
+        tokenBuf[tokenLen] = '\0';
+        for (int i = 0; i < tokenLen; i++)
+            tokenBuf[i] = tolower((unsigned char)tokenBuf[i]);
+        strncpy(tokens[numTokens].text, tokenBuf, sizeof(tokens[numTokens].text) - 1);
+        tokens[numTokens].text[sizeof(tokens[numTokens].text) - 1] = '\0';
+        tokens[numTokens].exclude = excludeFlag;
+        numTokens++;
     }
-    
-    // If no tokens (only spaces or empty), nothing matches
-    if (numTokens == 0) return 0;
-    
-    // Count how many required tokens (non‑exclude) we have
+
+    // Count required tokens (non‑exclude)
     int requiredCount = 0;
-    for (int i = 0; i < numTokens; i++) {
+    for (int i = 0; i < numTokens; i++)
         if (!tokens[i].exclude) requiredCount++;
-    }
-    if (requiredCount == 0) return 0;   // only exclusions – never matches anything
-    
-    // Now iterate over all item names from the cache
-    int capacity = 0;
-    int count = 0;
+    if (requiredCount == 0) return 0;
+
+    // Match against item names
+    int capacity = 0, count = 0;
     const char **items = NULL;
-    
+
     for (size_t i = 0; i < g_numItemNames; i++) {
         const char *dbName = g_itemNames[i];
-        // Convert dbName to lowercase once
         char lowerDb[256];
         size_t j;
-        for (j = 0; dbName[j] && j < sizeof(lowerDb)-1; j++) {
+        for (j = 0; dbName[j] && j < sizeof(lowerDb) - 1; j++)
             lowerDb[j] = tolower((unsigned char)dbName[j]);
-        }
         lowerDb[j] = '\0';
-        
+
         int match = 1;
-        for (int t = 0; t < numTokens; t++) {
+        for (int t = 0; t < numTokens && match; t++) {
             if (tokens[t].exclude) {
-                // Exclusion token must NOT be found
-                if (strstr(lowerDb, tokens[t].text) != NULL) {
+                if (strstr(lowerDb, tokens[t].text) != NULL)
                     match = 0;
-                    break;
-                }
             } else {
-                // Required token must be found
-                if (strstr(lowerDb, tokens[t].text) == NULL) {
+                if (strstr(lowerDb, tokens[t].text) == NULL)
                     match = 0;
-                    break;
-                }
             }
         }
         if (!match) continue;
-        
-        // Duplicate check (should not happen with proper cache, but safe)
+
+        // Duplicate check
         int dup = 0;
         for (int k = 0; k < count; k++) {
             if (strcmp(items[k], dbName) == 0) {
@@ -1831,7 +1821,7 @@ int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, con
             }
         }
         if (dup) continue;
-        
+
         if (count >= capacity) {
             capacity = capacity ? capacity * 2 : 32;
             const char **newItems = realloc(items, capacity * sizeof(const char*));
@@ -1843,14 +1833,15 @@ int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, con
         }
         items[count++] = dbName;
     }
-    
+
     if (count > 0) {
         *outItems = items;
         *outCount = count;
+        return count;
     } else {
         free(items);
+        return 0;
     }
-    return count;
 }
 
 /*******************************
@@ -1993,29 +1984,32 @@ void GetMissionItem( MissionItem* _pMissionItem, PUU32 _ItemKey1, PUU32
 
     /* If no item number 2, then just keep the first description */
     if( !_ItemKey2 || _ItemKey2 == _ItemKey1 )
-    {
-        strcpy( _pMissionItem->pName, sItem1.pName );
-        _pMissionItem->IconKey = sItem1.IconKey;
-        _pMissionItem->Value = sItem1.Value;
-    }
+		{
+			strncpy(_pMissionItem->pName, sItem1.pName, AODB_MAX_NAME_LEN);
+			_pMissionItem->pName[AODB_MAX_NAME_LEN] = '\0';
+			_pMissionItem->IconKey = sItem1.IconKey;
+			_pMissionItem->Value = sItem1.Value;
+		}
     /* Item number 2 exists, must interpolate */
     else
     {
         if( !GetAODBItem( &sItem2, _ItemKey2 ) )
-        {
-            goto FetchItemName_Err_NotFound;
-        }
-
-        if( abs( _QL - sItem1.QL ) < abs( sItem2.QL - _QL ) )
-        {
-            strcpy( _pMissionItem->pName, sItem1.pName );
-            _pMissionItem->IconKey = sItem1.IconKey;
-        }
-        else
-        {
-            strcpy( _pMissionItem->pName, sItem2.pName );
-            _pMissionItem->IconKey = sItem2.IconKey;
-        }
+		{
+			goto FetchItemName_Err_NotFound;
+		}
+		
+		if( abs( _QL - sItem1.QL ) < abs( sItem2.QL - _QL ) )
+		{
+			strncpy(_pMissionItem->pName, sItem1.pName, AODB_MAX_NAME_LEN);
+			_pMissionItem->pName[AODB_MAX_NAME_LEN] = '\0';
+			_pMissionItem->IconKey = sItem1.IconKey;
+		}
+		else
+		{
+			strncpy(_pMissionItem->pName, sItem2.pName, AODB_MAX_NAME_LEN);
+			_pMissionItem->pName[AODB_MAX_NAME_LEN] = '\0';
+			_pMissionItem->IconKey = sItem2.IconKey;
+		}
 
         if( ( sItem2.QL - sItem1.QL ) == 0 )
         {
@@ -2585,6 +2579,7 @@ static int FindItemInDescriptionFromCache(const PUU8* desc, unsigned long descLe
 // Main extraction function
 PUU32 MissionFind(PUU8* _pMissionDesc, PUU32 _DescLen, PUU8* _pItemName)
 {
+	if (_pItemName) _pItemName[0] = '\0';
     // First, try to find item from cache (most reliable)
     if (FindItemInDescriptionFromCache(_pMissionDesc, _DescLen, _pItemName)) {
         // Extra validation: ensure it's not a filtered item (optional)
@@ -2621,8 +2616,10 @@ PUU32 MissionFind(PUU8* _pMissionDesc, PUU32 _DescLen, PUU8* _pItemName)
                                    (PUU8*)a_udtFindName[lLoop].strEnd,
                                    strlen(a_udtFindName[lLoop].strEnd));
             if (lLength >= 0) {
-                memcpy(_pItemName, strStart, lLength);
-                _pItemName[lLength] = 0;
+				// Cap length to leave room for null terminator
+				if (lLength > 255) lLength = 255;
+				memcpy(_pItemName, strStart, lLength);
+				_pItemName[lLength] = 0;
                 // Trim trailing spaces
                 size_t len = strlen(_pItemName);
                 while (len > 0 && _pItemName[len-1] == ' ') _pItemName[--len] = '\0';
@@ -2679,7 +2676,7 @@ PUU32 MissionFind(PUU8* _pMissionDesc, PUU32 _DescLen, PUU8* _pItemName)
             end++;
         }
         size_t len = end - start;
-        if (len > 0 && len < 255) {
+        if (len > 0 && len < 256) {
             memcpy(_pItemName, start, len);
                 _pItemName[len] = '\0';
                 // Trim trailing spaces
@@ -2693,7 +2690,6 @@ PUU32 MissionFind(PUU8* _pMissionDesc, PUU32 _DescLen, PUU8* _pItemName)
     return FALSE;
 }
 
-/* Return mission PlayField */
 void MissionPF( PUS32 _PFNum, PUU8* _pPFString )
 {
     PUU8 *pData;
@@ -2704,7 +2700,8 @@ void MissionPF( PUS32 _PFNum, PUU8* _pPFString )
         return;
     }
 
-    strcpy( _pPFString, pData );
+    strncpy((char*)_pPFString, (char*)pData, 255);
+	_pPFString[255] = '\0';
 
     free( pData );
 }

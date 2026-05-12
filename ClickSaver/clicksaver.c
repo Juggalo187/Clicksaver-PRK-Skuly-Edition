@@ -246,14 +246,14 @@ static void trim_whitespace(char *str) {
     if (start != str) memmove(str, start, end - start + 1);
 }
 
-static void safe_strcpy(char *dest, size_t dest_size, const char *src)
+void safe_strcpy(char *dest, size_t dest_size, const char *src)
 {
     if (dest_size == 0) return;
     strncpy(dest, src, dest_size - 1);
     dest[dest_size - 1] = '\0';
 }
 
-static void safe_strcat(char *dest, size_t dest_size, const char *src)
+void safe_strcat(char *dest, size_t dest_size, const char *src)
 {
     size_t used = strlen(dest);
     size_t remaining = dest_size - used;
@@ -411,7 +411,7 @@ INT_PTR CALLBACK MatchListDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPa
                 char msg[512];
                 sprintf(msg, "Your typed name \"%s\" would match %d item(s).\n\nUse this name?", typed, newMatchCount);
                 if (MessageBoxA(hDlg, msg, "Confirm Typed Name", MB_YESNO | MB_ICONQUESTION) == IDYES) {
-                    strcpy(pMatchData->selected, typed);
+					safe_strcpy(pMatchData->selected, sizeof(pMatchData->selected), typed);
                     EndDialog(hDlg, IDOK);
                 }
                 return TRUE;
@@ -513,7 +513,7 @@ INT_PTR CALLBACK ItemEditDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPar
 
                     // If editing and name unchanged, skip validation
                     if (!pData->isAdd && strcmp(start, pData->itemName) == 0) {
-                        strcpy(pData->itemName, start);
+                        safe_strcpy(pData->itemName, sizeof(pData->itemName), start);
                         pData->limit = GetDlgItemInt(hDlg, IDC_LIMIT, NULL, FALSE);
                         pData->force = (IsDlgButtonChecked(hDlg, IDC_FORCE) == BST_CHECKED);
                         GetDlgItemTextA(hDlg, IDC_EXCLUDE, pData->exclude, sizeof(pData->exclude));
@@ -523,7 +523,7 @@ INT_PTR CALLBACK ItemEditDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPar
 
                     // Strip quotes for cache search
                     char searchName[256];
-                    strcpy(searchName, start);
+                    safe_strcpy(searchName, sizeof(searchName), start);
                     int hasQuotes = 0;
                     size_t len = strlen(searchName);
                     if (len >= 2 && searchName[0] == '"' && searchName[len-1] == '"') {
@@ -540,7 +540,7 @@ INT_PTR CALLBACK ItemEditDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPar
 
                     // Normalize
                     char normalized[256];
-                    strcpy(normalized, searchName);
+                    safe_strcpy(normalized, sizeof(normalized), searchName);
                     for (char *p = normalized; *p; p++) {
                         if (*p == '-') {
                             if ((p == normalized || *(p-1) == ' ') && (*(p+1) == ' ' || *(p+1) == '\0'))
@@ -587,7 +587,7 @@ INT_PTR CALLBACK ItemEditDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPar
                         INT_PTR result = DialogBoxParam(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_MATCH_LIST),
                                                         hDlg, MatchListDlgProc, (LPARAM)&data);
                         if (result == IDOK && data.selected[0] != '\0') {
-                            strcpy(start, data.selected);
+                            safe_strcpy(start, 256, data.selected);
                             hasQuotes = 0;
                             SetDlgItemTextA(hDlg, IDC_ITEM_NAME, start);
                             SetDlgItemInt(hDlg, IDC_LIMIT, savedLimit, FALSE);
@@ -603,9 +603,9 @@ INT_PTR CALLBACK ItemEditDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPar
                     if (hasQuotes && strlen(start) > 0 && start[0] != '"') {
                         char quoted[256];
                         snprintf(quoted, sizeof(quoted), "\"%s\"", start);
-                        strcpy(pData->itemName, quoted);
+                        safe_strcpy(pData->itemName, sizeof(pData->itemName), quoted);
                     } else {
-                        strcpy(pData->itemName, start);
+                        safe_strcpy(pData->itemName, sizeof(pData->itemName), start);
                     }
                     pData->limit = GetDlgItemInt(hDlg, IDC_LIMIT, NULL, FALSE);
                     pData->force = (IsDlgButtonChecked(hDlg, IDC_FORCE) == BST_CHECKED);
@@ -1339,12 +1339,12 @@ static void ImportItemsFromFile(const char *filename, int replaceMode) {
 static void ExportItemsOnly(const char *filename)
 {
     char fullpath[MAX_PATH];
-    strcpy(fullpath, filename);
+    safe_strcpy(fullpath, sizeof(fullpath), filename);
     
     // Append .cs if not already present (case-insensitive)
     size_t len = strlen(fullpath);
     if (len < 3 || _stricmp(fullpath + len - 3, ".cs") != 0)
-        strcat(fullpath, ".cs");
+        safe_strcat(fullpath, sizeof(fullpath), ".cs");
     
     FILE *fp = fopen(fullpath, "w");
     if (!fp) {
@@ -2163,10 +2163,10 @@ if (!LoadItemNameCache(cachePath)) {
 				// Prepare empty data
 				ItemEditData data;
 				memset(&data, 0, sizeof(data));
-				strcpy(data.itemName, "");
+				safe_strcpy(data.itemName, sizeof(data.itemName), "");
 				data.limit = 1;
 				data.force = 0;
-				strcpy(data.exclude, "");
+				safe_strcpy(data.exclude, sizeof(data.exclude), "");
 				data.isAdd = 1;
 			
 				HWND hMainWnd = (HWND)puGetAttribute(g_MainWin, PUA_WINDOW_HANDLE);
@@ -3192,10 +3192,13 @@ void ExportSettings( char* filename )
     PUU8* pString;
     unsigned int Val = 0;
     char* myfilename;
+    size_t myfilename_size = strlen(filename) + 5;
 
-    myfilename = malloc( strlen( filename ) + 5 );
-    strcpy( myfilename, filename );
-    if( !strstr( myfilename, ".cs" ) ) strcat( myfilename, ".cs" );
+    myfilename = malloc(myfilename_size);
+    if (!myfilename) return;  // allocation failed
+
+    safe_strcpy(myfilename, myfilename_size, filename);
+    if( !strstr( myfilename, ".cs" ) ) safe_strcat(myfilename, myfilename_size, ".cs" );
 
     if( !( fp = fopen( myfilename, "w" ) ) )
     {
@@ -3391,7 +3394,11 @@ int BuyingAgent( int delay )
         puGetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENT_WINDOW ), PUA_WINDOW_YPOS );
         puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENT_WINDOW ), PUA_WINDOW_OPENED, TRUE );
         BAWnd = (HWND)puGetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENT_WINDOW ), PUA_WINDOW_HANDLE );
+		
+		// Remove existing subclass to prevent stacking
+		RemoveWindowSubclass(BAWnd, BAWndProcHook, 1);
 		SetWindowSubclass(BAWnd, BAWndProcHook, 1, 0);
+		
         SetFocus( BAWnd );
 		// Force the saved position (in case PUL lost it)
 		PULID baWndObj = puGetObjectFromCollection(g_pCol, CS_BUYINGAGENT_WINDOW);
@@ -3404,7 +3411,12 @@ int BuyingAgent( int delay )
 
     // Set a timer that will post a WM_TIMER message to the main window after 'delay' ms
     HWND hMainWnd = (HWND)puGetAttribute( g_MainWin, PUA_WINDOW_HANDLE );
-    g_TimerID = SetTimer( hMainWnd, TIMER_BUYINGAGENT, delay, NULL );
+    // Kill any existing timer first to avoid stacking
+	if (g_TimerID) {
+		KillTimer(hMainWnd, TIMER_BUYINGAGENT);
+		g_TimerID = 0;
+	}
+	g_TimerID = SetTimer( hMainWnd, TIMER_BUYINGAGENT, delay, NULL );
     if (g_TimerID == 0)
     {
         DisplayErrorMessage( "Failed to create timer.", TRUE );
@@ -3417,7 +3429,7 @@ int BuyingAgent( int delay )
 void EndBuyingAgent()
 {
     g_bBuyingAgentActive = 0;
-	clearLocationStats();
+	//clearLocationStats();
 	g_bPaused = 0; 
     ClearItemCounters();
 	
@@ -3452,6 +3464,8 @@ void EndBuyingAgent()
 			puSetAttribute( baObj, PUA_WINDOW_OPENED, FALSE );
 			puSetAttribute( g_MainWin, PUA_WINDOW_OPENED, TRUE );
 			HWND hMainWnd = (HWND)puGetAttribute( g_MainWin, PUA_WINDOW_HANDLE );
+			if (baWnd && IsWindow(baWnd))
+				RemoveWindowSubclass(baWnd, BAWndProcHook, 1);
 			SetForegroundWindow( hMainWnd );
 			SetFocus( hMainWnd );
 			SetWindowPos( hMainWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE );
