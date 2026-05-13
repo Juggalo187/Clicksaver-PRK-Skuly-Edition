@@ -2564,6 +2564,19 @@ if (!LoadItemNameCache(cachePath)) {
 									char msg[128];
 									sprintf(msg, "Accepted %d of %d missions", g_BuyingAgentMaxMissions, g_BuyingAgentMaxMissions);
 									MessageBox( NULL, msg, "ClickSaver", MB_OK | MB_ICONINFORMATION | MB_SYSTEMMODAL );
+									
+									//skuly test
+									HWND hParent = (HWND)puGetAttribute(g_MainWin, PUA_WINDOW_HANDLE);
+										HWND hDlg = CreateDialogParam(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_LOCATION_STATS), hParent, LocStatsDialogProc, 0);
+										if (g_LocStatsX >= 0 && g_LocStatsY >= 0) {
+											SetWindowPos(hDlg, NULL, g_LocStatsX, g_LocStatsY, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+										}
+										g_hLocStatsWnd = hDlg;
+									
+										HWND hList = GetDlgItem(hDlg, IDC_LOC_STATS_LIST);
+										if (hList) PopulateLocationStatsListbox(hList);
+									
+										ShowWindow(hDlg, SW_SHOW);
 									EndBuyingAgent();
 									g_BuyingAgentCount = 0;
 								}
