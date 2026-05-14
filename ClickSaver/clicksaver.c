@@ -943,8 +943,8 @@ void MakeTableEntry(char *dest, size_t destSize, const char *raw)
 // Parse a display string (e.g. "Staff [qty 3] [exclude: rotten]") back into fields
 // Returns 0 on success, -1 if parsing fails
 static int ParseDisplayString(const char *display, char *itemName, size_t itemNameSize,
-                       int *disabled, int *forceAccept, int *quantityLimit,
-                       char *excludeWords, size_t excludeSize)
+                              int *disabled, int *forceAccept, int *quantityLimit,
+                              char *excludeWords, size_t excludeSize)
 {
     *disabled = 0;
     *forceAccept = 0;
@@ -954,24 +954,26 @@ static int ParseDisplayString(const char *display, char *itemName, size_t itemNa
 
     if (!display || !*display) return -1;
 
-    // Work on a copy
+    // Copy and work on a copy
     char buf[1024];
     strncpy(buf, display, sizeof(buf)-1);
     buf[sizeof(buf)-1] = '\0';
 
-    // --- 1. Item name: everything up to first '[' or end ---
-    char *nameEnd = strchr(buf, '[');
-    if (!nameEnd) nameEnd = buf + strlen(buf);
-    size_t nameLen = nameEnd - buf;
-    // trim trailing spaces
-    while (nameLen > 0 && buf[nameLen-1] == ' ') nameLen--;
+    // Extract item name: everything up to first '[' or end
+    char *p = buf;
+    char *nameEnd = strchr(p, '[');
+    if (!nameEnd) nameEnd = p + strlen(p);
+    size_t nameLen = nameEnd - p;
+    // Trim trailing spaces
+    while (nameLen > 0 && p[nameLen-1] == ' ') nameLen--;
     if (nameLen >= itemNameSize) nameLen = itemNameSize-1;
-    strncpy(itemName, buf, nameLen);
+    strncpy(itemName, p, nameLen);
     itemName[nameLen] = '\0';
 
-    // --- 2. Parse optional tags ---
-    char *p = buf + nameLen;
+    // Now parse tags
+    p = nameEnd;
     while (*p) {
+        // Skip whitespace and '['
         while (*p == ' ' || *p == '[') p++;
         if (!*p) break;
 
@@ -986,6 +988,7 @@ static int ParseDisplayString(const char *display, char *itemName, size_t itemNa
         else if (strncmp(p, "qty ", 4) == 0) {
             p += 4;
             *quantityLimit = atoi(p);
+            // skip to closing ']'
             while (*p && *p != ']') p++;
             if (*p == ']') p++;
         }
@@ -997,16 +1000,20 @@ static int ParseDisplayString(const char *display, char *itemName, size_t itemNa
             if (len > 0 && excludeWords && excludeSize > 0) {
                 strncpy(excludeWords, p, (len < excludeSize-1) ? len : excludeSize-1);
                 excludeWords[len] = '\0';
-                // Convert commas to spaces (our internal format uses space separated)
+                // Convert commas to spaces
                 for (char *c = excludeWords; *c; c++)
                     if (*c == ',') *c = ' ';
+                // trim trailing spaces
+                char *trim = excludeWords + strlen(excludeWords) - 1;
+                while (trim >= excludeWords && *trim == ' ') *trim-- = '\0';
             }
             p = end;
             if (*p == ']') p++;
         }
         else {
-            // Unknown tag – stop
-            break;
+            // unknown tag – skip to next ']'
+            while (*p && *p != ']') p++;
+            if (*p == ']') p++;
         }
     }
     return 0;
