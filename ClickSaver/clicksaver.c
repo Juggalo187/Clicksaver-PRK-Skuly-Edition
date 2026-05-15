@@ -1703,7 +1703,7 @@ INT_PTR CALLBACK LocStatsDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM l
                     //ShowModalMessage(NULL, "Location added to your watch list.\nGo to the 'LocWatch' tab to see it.", "Copied", MB_OK);
                     return TRUE;
                 }
-				case IDC_EXPORT_LIST_BTN: {
+			case IDC_EXPORT_LIST_BTN: {
                     // Ask user for a file name
                     char filename[MAX_PATH] = "";
                     OPENFILENAME ofn;
@@ -1872,6 +1872,115 @@ static void PopulateLocationStatsListbox(HWND hList) {
     sprintf(totalBuf, "Total attempts: %d    (click any location, then press 'Copy Waypoint')", totalAttempts);
     HWND hTotalStatic = GetDlgItem(GetParent(hList), IDC_TOTAL_STATS_TEXT);
     if (hTotalStatic) SetWindowTextA(hTotalStatic, totalBuf);
+}
+
+static void ExportLocations(const char *filename)
+{
+    char fullpath[MAX_PATH];
+    safe_strcpy(fullpath, sizeof(fullpath), filename);
+    size_t len = strlen(fullpath);
+    // Append .cs if not already present (case-insensitive)
+    if (len < 3 || _stricmp(fullpath + len - 3, ".cs") != 0)
+        safe_strcat(fullpath, sizeof(fullpath), ".cs");
+
+    FILE *fp = fopen(fullpath, "w");
+    if (!fp) {
+        char err[256];
+        sprintf(err, "Cannot create file:\n%s", fullpath);
+        DisplayErrorMessage(err, TRUE);
+        return;
+    }
+
+    fprintf(fp, "::LocWatch::\n");
+    PUU32 record = puDoMethod(g_LocWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+    while (record) {
+        PUU8 *line = (PUU8*)puDoMethod(g_LocWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
+        if (line && *line)
+            fprintf(fp, "%s\n", line);
+        record = puDoMethod(g_LocWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
+    }
+    fprintf(fp, "::END::\n");
+    fclose(fp);
+}
+
+static void ImportLocations(const char *filename, int replaceMode)
+{
+    if (replaceMode) {
+        if (ShowModalMessage(NULL,
+                "Replace will delete all current locations.\nContinue?",
+                "Confirm Replace", MB_YESNO) != IDYES)
+            return;
+        // Clear the entire location watch list
+        PUU32 record = puDoMethod(g_LocWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+        while (record) {
+            puDoMethod(g_LocWatchList, PUM_TABLE_REMRECORD, record, 0);
+            record = puDoMethod(g_LocWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+        }
+        // Refresh listview
+        PULID listView = puGetObjectFromCollection(g_pCol, CS_LOCWATCH_LISTVIEW);
+        puSetAttribute(listView, PUA_LISTVIEW_SELECTED, -1);
+    }
+
+    FILE *fp = fopen(filename, "r");
+    if (!fp) {
+        DisplayErrorMessage("Cannot open file.", TRUE);
+        return;
+    }
+
+    char line[1024];
+    int inLocSection = 0;
+    int addedCount = 0;
+    int duplicateCount = 0;
+
+    while (fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        trim_whitespace(line);
+        if (strcmp(line, "::LocWatch::") == 0) {
+            inLocSection = 1;
+            continue;
+        }
+        if (strcmp(line, "::END::") == 0 || strncmp(line, "::", 2) == 0)
+            break;
+        if (!inLocSection || strlen(line) == 0)
+            continue;
+
+        // Simple duplicate check (only for append mode)
+        int duplicate = 0;
+        if (!replaceMode) {
+            PUU32 rec = puDoMethod(g_LocWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+            while (rec) {
+                PUU8 *existing = (PUU8*)puDoMethod(g_LocWatchList, PUM_TABLE_GETFIELDVAL, rec, 0);
+                if (existing && strcmp((char*)existing, line) == 0) {
+                    duplicate = 1;
+                    break;
+                }
+                rec = puDoMethod(g_LocWatchList, PUM_TABLE_GETNEXTRECORD, rec, 0);
+            }
+        }
+        if (duplicate) {
+            duplicateCount++;
+            continue;
+        }
+
+        puDoMethod(g_LocWatchList, PUM_TABLE_NEWRECORD, 0, 0);
+        puDoMethod(g_LocWatchList, PUM_TABLE_ADDRECORD, 0, 0);
+        puDoMethod(g_LocWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)line, 0);
+        addedCount++;
+    }
+    fclose(fp);
+
+    // Refresh the listview after import
+    PULID listView = puGetObjectFromCollection(g_pCol, CS_LOCWATCH_LISTVIEW);
+    PULID table = puGetAttribute(listView, PUA_LISTVIEW_TABLE);
+    if (table) {
+        puSetAttribute(listView, PUA_LISTVIEW_TABLE, 0);
+        puSetAttribute(listView, PUA_LISTVIEW_TABLE, table);
+    }
+    puSetAttribute(listView, PUA_LISTVIEW_SELECTED, -1);
+
+    char msg[256];
+    sprintf(msg, "Imported %d locations. Duplicates skipped: %d", addedCount, duplicateCount);
+    ShowModalMessage(NULL, msg, "Import Complete", MB_OK);
 }
 
 int main( int argc, char** argv )
@@ -2318,6 +2427,35 @@ if (!LoadItemNameCache(cachePath)) {
 						ShowWindow(hDlg, SW_SHOW);
 						break;
 					}
+		case CSAM_IMPORT_LOCATIONS:
+			{
+				char filename[MAX_PATH];
+				HWND hMainWnd = (HWND)puGetAttribute(g_MainWin, PUA_WINDOW_HANDLE);
+				if (GetFile(hMainWnd, FALSE, filename, sizeof(filename))) {
+					int choice = ShowModalMessage(hMainWnd,
+						"Import Locations:\n\nYes = Append to current list\nNo = Replace current list\nCancel = Cancel",
+						"Import Locations", MB_YESNOCANCEL | MB_ICONQUESTION);
+					if (choice == IDYES)
+						ImportLocations(filename, 0);
+					else if (choice == IDNO)
+						ImportLocations(filename, 1);
+				}
+				break;
+			}
+			
+			case CSAM_EXPORT_LOCATIONS:
+			{
+				char filename[MAX_PATH];
+				HWND hMainWnd = (HWND)puGetAttribute(g_MainWin, PUA_WINDOW_HANDLE);
+				if (GetFile(hMainWnd, TRUE, filename, sizeof(filename))) {
+					ExportLocations(filename);
+					char msg[256];
+					sprintf(msg, "Exported %d locations.",
+							puGetAttribute(g_LocWatchList, PUA_TABLE_NUMRECORDS));
+					ShowModalMessage(hMainWnd, msg, "Export Complete", MB_OK);
+				}
+				break;
+			}
 
         case CSAM_BUYINGAGENT_TIMER:
             // Timer expired – send the click if not paused
