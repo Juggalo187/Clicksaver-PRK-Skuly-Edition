@@ -35,8 +35,7 @@ From what I could gather these were the official places/developers you could get
 [1] [CS v2.3.5 source download](http://www.ao-universe.com/index.php?id=29&mid=1&site=AO-Universe%2FMultimedia%2FDownloads%2FTools%2F&fid=14&action=download)
 
 [2] [CS v2.4.0 source download](http://www.lastmanut.pwp.blueyonder.co.uk/CS240_Source.zip)
-<p align="center">
-Item Name Optional means the Item name will be ignored if the other conditions are met (location/type/value) I found it useful for when I was trying to find missions with a certain credit value and wanted them to be in a specific area and didn't care as much about the item. Don't forget to turn it off when yo udon't need it on.
+<p align="center">Item Name Optional means the Item name will be ignored if the other conditions are met (location/type/value) I found it useful for when I was trying to find missions with a certain credit value and wanted them to be in a specific area and didn't care as much about the item. Don't forget to turn it off when you don't need it on.
 </p>
 
 <img width="112" height="18" alt="CS_ItemName Optional" src="https://github.com/user-attachments/assets/4ea98e1c-488f-43f5-9ec4-ceef88ae0460" />
