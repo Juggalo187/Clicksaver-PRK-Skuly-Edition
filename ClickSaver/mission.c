@@ -49,9 +49,7 @@ static PUU32 g_bRewardMatched = 0;
 extern PULID g_DisabledItemWatchList;
 extern sqlite3* g_pSQLite;
 
-//#define DEBUG_MISSION_PACKETS 1
 
-// Check if an item name is in the compiled exclusion list
 static int IsItemExcluded(const char *name) {
     if (!name || !*name) return 0;
     for (unsigned int i = 0; i < g_num_excluded_items; i++) {
@@ -101,13 +99,11 @@ static const char* MissionTypeToString(PUU32 type) {
     }
 }
 
-// Returns TRUE if the extracted item name is valid (not a stop word, length >= 3)
 static int IsValidItemName(const char* name) {
     if (!name || name[0] == '\0') return 0;
     size_t len = strlen(name);
     if (len < 3) return 0;
 
-    // Stop words (same as before)
     const char* stop_words[] = {
         "it", "the", "a", "an", "to", "of", "and", "for", "with", "this", "that",
         "these", "those", "from", "by", "into", "onto", "upon", "in", "on", "at",
@@ -119,7 +115,6 @@ static int IsValidItemName(const char* name) {
         "oppressor", "oppressors", "lies", "propaganda", NULL
     };
 
-    // Reject single‑word items that lack punctuation (likely locations)
     int word_count = 1;
     for (size_t i = 0; i < len; i++) {
         if (name[i] == ' ') word_count++;
@@ -129,10 +124,9 @@ static int IsValidItemName(const char* name) {
                           (strchr(name, ')') != NULL);
 
     if (word_count == 1 && !has_punctuation) {
-        return 0; // single word without punctuation -> probably a location
+        return 0;
     }
 
-    // Convert to lowercase for stop‑word check
     char lower[256] = { 0 };
     size_t i;
     for (i = 0; i < len && i < 255; i++) {
@@ -148,7 +142,6 @@ static int IsValidItemName(const char* name) {
 }
 
 static int ExtractItemNameFromBlob(const void *blob, size_t blobSize, char *outName, size_t outSize) {
-    // Scan for the name signature: 0x15 0x00 0x00 0x00 0x21 0x00 0x00 0x00
     const unsigned char *data = (const unsigned char *)blob;
     for (size_t i = 0; i + 12 <= blobSize; i++) {
         if (*(unsigned int*)(data + i) == 0x15 && *(unsigned int*)(data + i + 4) == 0x21) {
@@ -162,7 +155,6 @@ static int ExtractItemNameFromBlob(const void *blob, size_t blobSize, char *outN
     return 0;
 }
 
-// Helper to check for duplicates while building cache
 static int is_duplicate(const char *name, char **seen, int *seen_count) {
     for (int i = 0; i < *seen_count; i++) {
         if (strcmp(seen[i], name) == 0)
@@ -176,7 +168,6 @@ static int is_duplicate(const char *name, char **seen, int *seen_count) {
 int ShouldSkipItemName(const char *name) {
     if (!name || !*name) return 1;
 
-    // List of substrings to exclude (case-insensitive)
     const char *skip_patterns[] = {
         "Photon Particle Emitter",
         "Compiled Algorithm",
@@ -229,7 +220,6 @@ int ShouldSkipItemName(const char *name) {
         NULL
     };
 
-    // Convert name to lowercase for case-insensitive matching
     char lowerName[256];
     size_t i;
     for (i = 0; name[i] && i < sizeof(lowerName)-1; i++) {
@@ -238,7 +228,6 @@ int ShouldSkipItemName(const char *name) {
     lowerName[i] = '\0';
 
     for (int p = 0; skip_patterns[p] != NULL; p++) {
-        // Convert pattern to lowercase as well
         char lowerPattern[256];
         size_t j;
         for (j = 0; skip_patterns[p][j] && j < sizeof(lowerPattern)-1; j++) {
@@ -247,24 +236,21 @@ int ShouldSkipItemName(const char *name) {
         lowerPattern[j] = '\0';
 
         if (strstr(lowerName, lowerPattern) != NULL) {
-            return 1; // skip this item
+            return 1;
         }
     }
 	
-	// NEW: check the compiled exclusion list
     if (IsItemExcluded(name))
         return 1;
 	
-    return 0; // keep item
+    return 0;
 }
 
 static void NormalizeString(const char* src, char* dst, size_t dstSize) {
     size_t i = 0;
     while (*src && i < dstSize - 1) {
         char c = *src++;
-        // Convert to lowercase
         if (c >= 'A' && c <= 'Z') c += 32;
-        // Remove apostrophes (both straight and curly)
         if (c == '\'' || c == '’') continue;
         dst[i++] = c;
     }
@@ -301,7 +287,6 @@ void BuildItemNameCache(const char *filename) {
         }
     }
 
-    // Safe bound for compression (compatible with older zlib)
     uLongf compressed_size = total_len + (total_len >> 3) + (total_len >> 6) + 13;
     unsigned char *compressed = malloc(compressed_size);
     if (!compressed) goto cleanup;
@@ -335,7 +320,6 @@ int LoadItemNameCache(const char *cacheFilePath) {
     if (fread(&origSize, 4, 1, f) != 1) { fclose(f); return 0; }
     if (fread(&compSize, 4, 1, f) != 1) { fclose(f); return 0; }
 
-    // Sanity checks – prevent huge allocations
     if (origSize > 50 * 1024 * 1024 || compSize > 50 * 1024 * 1024) {
         fclose(f);
         return 0;
@@ -348,7 +332,7 @@ int LoadItemNameCache(const char *cacheFilePath) {
         fclose(f);
         return 0;
     }
-    fclose(f);   // done reading file
+    fclose(f);
 
     unsigned char *data = (unsigned char*)malloc(origSize);
     if (!data) { free(comp); return 0; }
@@ -366,7 +350,6 @@ int LoadItemNameCache(const char *cacheFilePath) {
         return 0;
     }
 
-    // Split the data into strings (original logic)
     size_t count = 0;
     for (size_t i = 0; i < origSize; i++) {
         if (data[i] == '\0') count++;
@@ -385,9 +368,8 @@ int LoadItemNameCache(const char *cacheFilePath) {
         }
     }
     g_numItemNames = idx;
-    free(data);   // free the raw buffer
+    free(data);
 
-    // Sort for binary search
     qsort(g_itemNames, g_numItemNames, sizeof(char*),
           (int(*)(const void*, const void*))strcmp);
 		  
@@ -398,18 +380,15 @@ int LoadItemNameCache(const char *cacheFilePath) {
 
 static void BuildItemIndex(void) {
     if (!g_itemNames || g_numItemNames == 0) return;
-    
-    // Free existing index if any
+
     for (int i = 0; i < g_itemIndexSize; i++) {
         free(g_itemIndex[i].firstWord);
-        free((void*)g_itemIndex[i].items); // items is const char**, but we allocated it
+        free((void*)g_itemIndex[i].items);
     }
     free(g_itemIndex);
     g_itemIndex = NULL;
     g_itemIndexSize = 0;
     
-    // Use a temporary hash map (simple array of buckets with linear search for small count)
-    // We'll just build a list and sort later for simplicity.
     struct TempEntry {
         char* firstWord;
         const char** items;
@@ -420,7 +399,6 @@ static void BuildItemIndex(void) {
     
     for (size_t i = 0; i < g_numItemNames; i++) {
         const char* fullName = g_itemNames[i];
-        // Extract first word (up to first space)
         char firstWord[256];
         const char* p = fullName;
         size_t wlen = 0;
@@ -428,12 +406,10 @@ static void BuildItemIndex(void) {
             firstWord[wlen++] = *p++;
         }
         firstWord[wlen] = '\0';
-        // Normalize first word (lowercase, remove apostrophes)
         char normFirst[256];
         NormalizeString(firstWord, normFirst, sizeof(normFirst));
         if (normFirst[0] == '\0') continue;
         
-        // Find or create temp entry
         int idx = -1;
         for (int j = 0; j < tempSize; j++) {
             if (strcmp(temp[j].firstWord, normFirst) == 0) {
@@ -442,7 +418,6 @@ static void BuildItemIndex(void) {
             }
         }
         if (idx == -1) {
-            // Add new entry
             temp = realloc(temp, (tempSize+1) * sizeof(struct TempEntry));
             temp[tempSize].firstWord = _strdup(normFirst);
             temp[tempSize].items = NULL;
@@ -451,7 +426,7 @@ static void BuildItemIndex(void) {
             idx = tempSize;
             tempSize++;
         }
-        // Add item to list
+		
         struct TempEntry* e = &temp[idx];
         if (e->count >= e->capacity) {
             e->capacity = e->capacity ? e->capacity * 2 : 4;
@@ -459,8 +434,7 @@ static void BuildItemIndex(void) {
         }
         e->items[e->count++] = fullName;
     }
-    
-    // Convert to final index array
+
     g_itemIndexSize = tempSize;
     g_itemIndex = malloc(g_itemIndexSize * sizeof(ItemIndexEntry));
     for (int i = 0; i < tempSize; i++) {
@@ -479,7 +453,6 @@ void FreeItemNameCache(void) {
     g_itemNames = NULL;
     g_numItemNames = 0;
 	
-	// Free index
     for (int i = 0; i < g_itemIndexSize; i++) {
         free(g_itemIndex[i].firstWord);
         free((void*)g_itemIndex[i].items);
@@ -516,38 +489,9 @@ static int IsRealItemName(const char *name) {
                    (int(*)(const void*, const void*))strcmp) != NULL;
 }
 
-/* static void LogMissionDescription(PUU32 missionType, const char* findItem)
-{
-    // Only log for Find Item or Return Item
-    if (!(missionType == 0x2c49 || missionType == 0x26add)) return;
-
-    const char* findStr = (findItem && findItem[0]) ? findItem : "(none)";
-    int wordCount = WordCount(findStr);
-
-    // Conditions to log:
-    // 1. Extraction failed (findStr == "(none)")
-    // 2. OR (extraction succeeded AND wordCount <= 2 AND not a common item)
-    int shouldLog = 0;
-    if (findStr[0] == '\0' || strcmp(findStr, "(none)") == 0) {
-        shouldLog = 1;
-    } else if (wordCount <= 2 && !IsCommonItem(findStr)) {
-        shouldLog = 1;
-    }
-
-    if (!shouldLog) return;
-
-    FILE* f = fopen("clicksaver_missions.log", "a");
-    if (!f) return;
-
-    const char* typeStr = MissionTypeToString(missionType);
-    fprintf(f, "Type=%s, FindItem=\"%s\"\n", typeStr, findStr);
-    fclose(f);
-} */
-
 static void LogMissionDescription(PUU32 missionType, const char *findItem,
                                   const PUU8* pDesc, PUU32 descLen)
 {
-    // Only log for Find Item or Return Item
     if (!(missionType == 0x2c49 || missionType == 0x26add))
         return;
 
@@ -558,19 +502,16 @@ static void LogMissionDescription(PUU32 missionType, const char *findItem,
     char descSnippet[256] = {0};
 
     if (strcmp(findStr, "(none)") == 0) {
-        shouldLog = 1;  // extraction failed
-        // Build description snippet (limit to 200 chars, clean newlines)
+        shouldLog = 1;
         if (pDesc && descLen > 0) {
             size_t snippetLen = (descLen < 200) ? descLen : 200;
             strncpy(descSnippet, (const char*)pDesc, snippetLen);
             descSnippet[snippetLen] = '\0';
-            // Replace newlines and carriage returns with spaces
             for (char *c = descSnippet; *c; c++) {
                 if (*c == '\n' || *c == '\r') *c = ' ';
             }
         }
     } else if (wordCount <= 2) {
-        // Only log if the name is NOT a known real item (case‑insensitive)
         if (!IsCommonItem(findStr) && !IsRealItemNameCI(findStr))
             shouldLog = 1;
     }
@@ -582,7 +523,6 @@ static void LogMissionDescription(PUU32 missionType, const char *findItem,
 
     const char* typeStr = MissionTypeToString(missionType);
     
-    // Write log line – include description snippet only for failed extraction
     if (strcmp(findStr, "(none)") == 0 && descSnippet[0]) {
         fprintf(f, "Type=%s, FindItem=\"(none)\", Desc=\"%s\"\n", typeStr, descSnippet);
     } else {
@@ -592,7 +532,6 @@ static void LogMissionDescription(PUU32 missionType, const char *findItem,
     fclose(f);
 }
 
-// ========== FORWARD DECLARATIONS FOR COUNTERS ==========
 typedef struct ItemCounter {
     char *itemName;
     int limit;
@@ -603,7 +542,6 @@ typedef struct ItemCounter {
 extern ItemCounter* FindItemCounter(const char *name);
 extern void AddItemCounter(const char *name, int limit);
 extern PUU8 g_bUpdatingCounters;
-// =======================================================
 extern PUU8 g_MishNumber;
 
 PUU32 MissionSetAttr( PULID _Object, PULID _Class, void* _pData, PUU32 _Attr, PUU32 _Val );
@@ -618,14 +556,12 @@ PUU8 g_bOverrideMatch = 0;
 extern PUU8 g_bUpdatingCounters;
 extern PUU8 g_bForceUIRefresh;
 
-/* AOMD functions */
 PUU8 GetAODBItem( MissionItem* _pMissionItem, PUU32 _ItemKey );
 void GetMissionItem( MissionItem* _pMissionItem, PUU32 _ItemKey1, PUU32 _ItemKey2, PUU32 _QL );
 PUU8 *GetAOIconData( unsigned long lIconNo );
 PUU32 MissionFind( PUU8* _pMissionDesc, PUU32 _DescLen, PUU8* _pItemName );
 void MissionPF( PUS32 _PFNum, PUU8* _pPFString );
 long FindStr( PUU8* a_xBuf, unsigned long lBufLen, PUU8* a_xFind, unsigned long lFindLen );
-/***/
 
 static const char *container_prefixes[] = {
     "blister pack with",
@@ -996,8 +932,8 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     PUU32 TempVal, MishPF;
     PUU32 Cash, XP, MishQL, MishID, TotalValue;
     PUU32 bAlertItem, bAlertLoc, bAlertType;
-    PUU32 bItemNameMatch = FALSE;    // watchlist name matched
-    PUU32 bValueMatch = FALSE;       // any value threshold exceeded
+    PUU32 bItemNameMatch = FALSE;
+    PUU32 bValueMatch = FALSE;
     PUU32 bLocFound = FALSE, bTypeFound = FALSE;
 	int bExitFound = 0;  
     PUU32 Count = 65536 - 4, DescLength;
@@ -1024,7 +960,6 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     if( !puGetAttribute( g_ItemWatchList, PUA_TABLE_NUMRECORDS ) ) bAlertItem = FALSE;
     if( !puGetAttribute( g_LocWatchList, PUA_TABLE_NUMRECORDS ) ) bAlertLoc = FALSE;
 
-    // Find start of mission packet (look for 0xDAC3)
     do {
         if( _pMissionData >= pEndMissionData ) {
             puSetAttribute( puGetObjectFromCollection( _pData->pCol, ROOTOBJ ), PUA_CONTROL_HIDDEN, TRUE );
@@ -1046,16 +981,12 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
 		WriteDebug( 0 );
 	#endif
 
-    // Skip short description (null terminated)
     while( *_pMissionData ) _pMissionData++;
     _pMissionData++;
 
-    // Get full description length
     TempVal = EndianSwap32( *(PUU32*)_pMissionData );
     _pMissionData += 4;
     pDesc = _pMissionData;
-    
-    // **
 	
     DescLength = TempVal;
     _pMissionData += TempVal;
@@ -1068,7 +999,6 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     TotalValue = Cash;
     XP = EndianSwap32( *(PUU32*)(_pMissionData + 0x14) );
 
-    // Count items
     pTmpItem = pItem = (Item*)(_pMissionData + 0x24);
     while( pTmpItem->Key1 != 0x2d2d2d2d ) {
         MissionItem sItem;
@@ -1103,7 +1033,6 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
         puSetAttribute( puGetObjectFromCollection( _pData->pCol, MISHXP ), PUA_TEXT_STRING, (PUU32)_pData->XPStr );
     }
 
-	// Playfield and coordinates
 		CHECK_BOUNDS(_pMissionData, 0xbc + 4);
 		MishPF = EndianSwap32( *(PUU32*)(_pMissionData + 0xA8) );
 		MissionPF( MishPF, PFName );
@@ -1112,18 +1041,14 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
 		TempVal = EndianSwap32( *(PUU32*)(_pMissionData + 0xbc) );
 		*(PUU32*)(&CoordY) = TempVal;
 		snprintf(TempStr, sizeof(TempStr), "%s (%.1f, %.1f)", PFName, CoordX, CoordY);
-		if (g_bBuyingAgentActive) {
-			addLocationStat(PFName, MishPF, CoordX, CoordY);
-		}
+		
 		bExitFound = CheckMissionNearExit(MishPF, CoordX, CoordY);
 		bLocFound = SetAndSearch( TempStr, puGetObjectFromCollection( _pData->pCol, LOCATION ), g_LocWatchList );
 		
-		// After SetAndSearch, re-apply exit highlight if it should be highlighted
 		if (bExitFound && puGetAttribute(puGetObjectFromCollection(g_pCol, CS_HIGHLIGHTEXIT_CB), PUA_CHECKBOX_CHECKED)) {
 			puSetAttribute(puGetObjectFromCollection(_pData->pCol, LOCATION), PUA_TEXTENTRY_HILIGHT, TRUE);
 		}
 
-    // Mission type
 	CHECK_BOUNDS(_pMissionData, 0x28 + 4);
     TempVal = EndianSwap32( *(PUU32*)(_pMissionData + 0x28) );
     bTypeFound = SetAndSearchType( TempVal, puGetObjectFromCollection( _pData->pCol, MISHTYPE ) );
@@ -1131,7 +1056,6 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     WriteLog( "mission\t%u\t%u\t%u\t%u\t%s\n", MishID, MishQL, XP, Cash, CharKey );
     WriteLog( "loc\t%u\t%.1f\t%.1f\t%s\n", MishPF, CoordX, CoordY, PFName );
 
-    // Process items – collect name matches and value matches
     for( i = 0; i < NumItems; i++ ) {
 		PUU32 flags = ShowItem( _pData, pItem++, i + ITEM1, i + ITEMVAL1 );
 		bItemNameMatch |= (flags & 1);
@@ -1140,7 +1064,6 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
 		TotalValue += _pData->Reward.Value * puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMVALUE_BUYMOD ), PUA_TEXTENTRY_VALUE ) / 100;
 	}
 
-    // Total value highlight and match
     if( !g_BuyingAgentCount || g_bForceUIRefresh )
         puSetAttribute( puGetObjectFromCollection( _pData->pCol, TOTALVAL ), PUA_TEXTENTRY_VALUE, TotalValue );
 
@@ -1164,7 +1087,6 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
         puSetAttribute( puGetObjectFromCollection( _pData->pCol, FOLD ), PUA_FOLD_HILIGHT, bItemNameMatch ? TRUE : FALSE );
     }
 
-    // Find item in description – only for Find Item (0x2c49) and Return Item (0x26add)
 	if (TempVal == 0x2c49 || TempVal == 0x26add) {
 		if (MissionFind(pDesc, DescLength, TempStr)) {
 			WriteLog("find\t%s\n", TempStr);
@@ -1182,18 +1104,16 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
 			TempStr[0] = '\0';
 		}
 	} else {
-        // For all other mission types, clear the Find: field
         puSetAttribute(puGetObjectFromCollection(_pData->pCol, FINDITEM), PUA_TEXTENTRY_BUFFER, 0);
         TempStr[0] = '\0';
     }
 	
-        // If any override item (starting with '~') was found, accept immediately
 		if( g_bOverrideMatch ) {
 			bAccept = 1;
 		} else {
-			// ---- NEW LOGIC for optional item name (Behavior B) ----
+
 			PUU32 bItemOptional = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMOPTIONAL_CB ), PUA_CHECKBOX_CHECKED );
-			// Include exit in the non‑item active criteria
+
 			PUU32 bNonItemActive = bAlertLoc || bAlertType || PUL_GET_CB(CS_ITEMVALUE_MSINGLE) || PUL_GET_CB(CS_ITEMVALUE_MTOTAL) || (bExitFound && PUL_GET_CB(CS_ALERTEXIT_CB));
 		
 			if( bItemOptional && bNonItemActive ) {
@@ -1258,15 +1178,12 @@ PUU32 ShowItem( MissionClassData* _pData, Item* _pItem, PUU32 _ObjId, PUU32 _Val
         GetMissionItem( &_pData->Reward, ItemKey1, ItemKey2, QL );
         WriteLog( "reward\t%u\t%u\t%u\t%s\n", ItemKey1, ItemKey2, QL, _pData->Reward.pName );
 
-        // Display item name and ql
         sprintf( TempStr, "QL%u %s", QL, _pData->Reward.pName );
         bNameMatch = SetAndSearch( TempStr, puGetObjectFromCollection( _pData->pCol, _ObjId ), g_ItemWatchList );
 
-        // Calculate value after buy mod
         int itemValue = _pData->Reward.Value * puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMVALUE_BUYMOD ), PUA_TEXTENTRY_VALUE ) / 100;
         puSetAttribute( puGetObjectFromCollection( _pData->pCol, _ValID ), PUA_TEXTENTRY_VALUE, itemValue );
 
-        // Check single‑item value threshold
         int singleThreshold = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMVALUE_SINGLE ), PUA_TEXTENTRY_VALUE );
         if( itemValue > singleThreshold )
         {
@@ -1278,7 +1195,6 @@ PUU32 ShowItem( MissionClassData* _pData, Item* _pItem, PUU32 _ObjId, PUU32 _Val
             puSetAttribute( puGetObjectFromCollection( _pData->pCol, _ValID ), PUA_TEXTENTRY_HILIGHT, FALSE );
         }
 
-        // Icon handling
         if( (!g_BuyingAgentCount || g_bForceUIRefresh) && _pData->pCol == _pData->pSingleCol )
         {
             if( _pData->pImageData ) free( _pData->pImageData );
@@ -1304,7 +1220,7 @@ PUU32 SetAndSearchType( PUU32 TempVal, PULID _TextEntry )
         break;
 
     //    case 0x2c41: 
-    case 0x26add:	//PRK new id
+    case 0x26add:
         sprintf( TempStr, "Return Item" );
         if( puGetAttribute( puGetObjectFromCollection( g_pCol, CS_TYPERETURN_CB ),
             PUA_CHECKBOX_CHECKED ) ) match = 1;
@@ -1331,7 +1247,7 @@ PUU32 SetAndSearchType( PUU32 TempVal, PULID _TextEntry )
     default: sprintf( TempStr, "Unknown: 0x%08X - Please report", TempVal );
         break;
     }
-    // Don't update interface when buying agent is running
+	
     if( !g_BuyingAgentCount || g_bForceUIRefresh )
     {
         puSetAttribute( _TextEntry, PUA_TEXTENTRY_BUFFER, (PUU32)&TempStr );
@@ -1342,8 +1258,6 @@ PUU32 SetAndSearchType( PUU32 TempVal, PULID _TextEntry )
     return match;
 }
 
-// Parse a display string like "ItemName [force accept] [qty N] [exclude: words]"
-// Returns 1 if force-accept is present, and fills name, limit, and exclude words.
 static int ParseItemDisplayString(const char *display, char *itemName, size_t nameSize,
                                   int *limit, char *excludeWords, size_t excludeSize)
 {
@@ -1356,7 +1270,6 @@ static int ParseItemDisplayString(const char *display, char *itemName, size_t na
     strncpy(buf, display, sizeof(buf)-1);
     buf[sizeof(buf)-1] = '\0';
 
-    // --- 1. Item name: everything up to first '[' or end ---
     char *nameEnd = strchr(buf, '[');
     if (!nameEnd) nameEnd = buf + strlen(buf);
     size_t nameLen = nameEnd - buf;
@@ -1365,7 +1278,6 @@ static int ParseItemDisplayString(const char *display, char *itemName, size_t na
     strncpy(itemName, buf, nameLen);
     itemName[nameLen] = '\0';
 
-    // --- 2. Parse optional tags ---
     char *p = buf + nameLen;
     int force = 0;
     while (*p) {
@@ -1397,17 +1309,12 @@ static int ParseItemDisplayString(const char *display, char *itemName, size_t na
             if (*p == ']') p++;
         }
         else {
-            // Skip unknown tags
             while (*p && *p != ']') p++;
             if (*p == ']') p++;
         }
     }
     return force;
 }
-
-/* Set string to a textentry control, search for it in a list,
-   and hilight the textentry if the string was found.
-*/
 
 PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
     PUU32 Record;
@@ -1430,7 +1337,7 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
     Record = puDoMethod( _List, PUM_TABLE_GETFIRSTRECORD, 0, 0 );
     while( Record ) {
         if( ( pString = (PUU8*)puDoMethod( _List, PUM_TABLE_GETFIELDVAL, Record, 0 ) ) && *pString ) {
-            if( *pString == '#' ) {   // legacy disabled items (not used anymore)
+            if( *pString == '#' ) {
                 Record = puDoMethod( _List, PUM_TABLE_GETNEXTRECORD, Record, 0 );
                 continue;
             }
@@ -1458,14 +1365,11 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
 							}
 						}
 						if (!watchHasPrefix) {
-							// Skip this watch item entirely – move to next record
 							Record = puDoMethod(_List, PUM_TABLE_GETNEXTRECORD, Record, 0);
 							continue;
 						}
 					}
 					
-
-                // Build search string for ItemMatch: "cleanName -exclude1 -exclude2"
                 char searchStr[512] = { 0 };
                 searchStr[0] = '\0';
                 strncat(searchStr, cleanName, sizeof(searchStr)-1);
@@ -1479,13 +1383,11 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
                 }
 
                 if( ItemMatch( TmpItemName, (PUU8*)searchStr ) ) {
-				// Determine whether to count this match for quantity limits
 				int should_count = 1;
 				if (g_bUpdatingCounters && g_bIsFindItem && g_bIsReturnMission && g_bRewardMatched) {
 					should_count = 0;
 				}
-			
-				// Handle quantity limit
+				
 				if( limit > 0 ) {
 					ItemCounter *ic = FindItemCounter( cleanName );
 					if( !ic ) {
@@ -1497,48 +1399,45 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
 							if (ic->accepted < ic->limit) {
 								ic->accepted++;
 							}
-							// ===== NEW: Auto‑move when limit is reached =====
 							if (ic->accepted == ic->limit) {
-								// Move this entry from Active to Disabled list
 								PUU32 nextRecord = puDoMethod(_List, PUM_TABLE_GETNEXTRECORD, Record, 0);
-								// Add to disabled list (same display string)
 								puDoMethod(g_DisabledItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
 								puDoMethod(g_DisabledItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
 								puDoMethod(g_DisabledItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)pString, 0);
-								// Remove from active list
 								puDoMethod(_List, PUM_TABLE_REMRECORD, Record, 0);
-								// Force refresh of the Active listview
+								
 								PULID listView = puGetObjectFromCollection(g_pCol, CS_ITEMWATCH_LISTVIEW);
+								
+								puSetAttribute(listView, PUA_LISTVIEW_SELECTED, -1);
+								
 								PULID table = puGetAttribute(listView, PUA_LISTVIEW_TABLE);
 								if (table) {
 									puSetAttribute(listView, PUA_LISTVIEW_TABLE, 0);
 									puSetAttribute(listView, PUA_LISTVIEW_TABLE, table);
 								}
-								// Continue loop with the next record
+								
+								puDoMethod(listView, PUM_CONTROL_RELAYOUT, 0, 0);
+								
 								Record = nextRecord;
 								continue;
 							}
-							// ===== End of new code =====
 						} else if( ic->accepted >= ic->limit ) {
 							Record = puDoMethod( _List, PUM_TABLE_GETNEXTRECORD, Record, 0 );
 							continue;
 						}
 					}
 				}
-                    
-                    // Force-accept flag
                     if( force ) {
                         g_bOverrideMatch = 1;
                     }
                     
-                    // Highlight if not in buying agent
                     if( !g_BuyingAgentCount || g_bForceUIRefresh ) {
                         puSetAttribute( _TextEntry, PUA_TEXTENTRY_HILIGHT,
                             puGetAttribute( puGetObjectFromCollection( g_pCol, CS_HIGHLIGHTITEM_CB ), PUA_CHECKBOX_CHECKED ) );
                     }
                     return TRUE;
                 }
-            } else { // location matching
+            } else {
                 if( LocationMatch( TmpItemName, pString ) ) {
                     if( !g_BuyingAgentCount || g_bForceUIRefresh ) {
                         puSetAttribute( _TextEntry, PUA_TEXTENTRY_HILIGHT,
@@ -1557,18 +1456,6 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
     return FALSE;
 }
 
-/*******************************
-Item Search, to allow web-search-like constructors "<text>", -<text> and
-word-match
-Examples:
-Searching for 'decus -gloves' will match all decus items except gloves;
-Searching for 'decus armor' will match on 'decus body armor', and 'decus
-armor boots'
-Searching for '"decus armor"' will match on 'decus armor boots' but not on
-'decus body armor'
-Searching for '"primus decus" -gloves -boots -body' will match on all primus
-decus armor except for gloves, boots and body
-********************************/
 PUU32 ItemMatch( PUU8* ItemName, PUU8* ItemSearch )
 {
     PUU8 TmpString[ 256 ] = { 0 };
@@ -1642,19 +1529,17 @@ PUU32 ItemMatch( PUU8* ItemName, PUU8* ItemSearch )
     return HadValidString;
 }
 
-// Returns 1 if the user's watchlist entry would match at least one real item.
+
 int IsWatchlistEntryValid(const char *searchStr)
 {
     if (!g_itemNames || !searchStr || !*searchStr) return 0;
 
-    // Step 1: Full watchlist matching logic (supports quotes, exclusions, word order)
     for (size_t i = 0; i < g_numItemNames; i++) {
         if (ItemMatch((PUU8*)g_itemNames[i], (PUU8*)searchStr)) {
             return 1;
         }
     }
 
-    // Step 2: Case‑insensitive prefix match (for missing trailing punctuation)
     char lowerSearch[256] = {0};
     size_t len = 0;
     for (len = 0; searchStr[len] && len < sizeof(lowerSearch)-1; len++) {
@@ -1670,16 +1555,13 @@ int IsWatchlistEntryValid(const char *searchStr)
                 break;
         }
         if (j == len) {
-            return 1;   // database name starts with the entered text
+            return 1;
         }
     }
 
-    // Step 3: Case‑insensitive substring match (for phrases inside longer names)
-    // Skip very short search strings to avoid false positives (e.g., "a", "an")
     if (len >= 3) {
         for (size_t i = 0; i < g_numItemNames; i++) {
             const char *dbName = g_itemNames[i];
-            // Convert database name to lowercase once per iteration
             char lowerDb[256] = {0};
             size_t k;
             for (k = 0; dbName[k] && k < sizeof(lowerDb)-1; k++) {
@@ -1687,7 +1569,7 @@ int IsWatchlistEntryValid(const char *searchStr)
             }
             lowerDb[k] = '\0';
             if (strstr(lowerDb, lowerSearch) != NULL) {
-                return 1;   // search string is a substring of a real item name
+                return 1;
             }
         }
     }
@@ -1701,7 +1583,6 @@ int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, con
     *outCount = 0;
     if (!g_itemNames || !baseName || !*baseName) return 0;
 
-    // ----- Build fullSearch safely -----
     char fullSearch[1024];
     int written = snprintf(fullSearch, sizeof(fullSearch), "%s", baseName);
     if (written < 0 || (size_t)written >= sizeof(fullSearch)) {
@@ -1725,7 +1606,6 @@ int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, con
         }
     }
 
-    // ----- Tokenize without modifying the string -----
     struct Token {
         char text[256];
         int exclude;
@@ -1742,18 +1622,16 @@ int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, con
     while (*p) {
         char c = *p;
 
-        // Handle quotes
         if (c == '"') {
             inQuote = !inQuote;
             p++;
             continue;
         }
 
-        // Handle delimiters (space or tab) only when not inside quotes
+
         if (!inQuote && (c == ' ' || c == '\t')) {
             if (tokenLen > 0) {
                 tokenBuf[tokenLen] = '\0';
-                // Convert token to lowercase
                 for (int i = 0; i < tokenLen; i++)
                     tokenBuf[i] = tolower((unsigned char)tokenBuf[i]);
                 strncpy(tokens[numTokens].text, tokenBuf, sizeof(tokens[numTokens].text) - 1);
@@ -1767,21 +1645,18 @@ int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, con
             continue;
         }
 
-        // Start of a token
         if (tokenLen == 0 && !inQuote && c == '^') {
             excludeFlag = 1;
             p++;
             continue;
         }
 
-        // Accumulate character
         if (tokenLen < (int)sizeof(tokenBuf) - 1) {
             tokenBuf[tokenLen++] = c;
         }
         p++;
     }
 
-    // Last token
     if (tokenLen > 0) {
         tokenBuf[tokenLen] = '\0';
         for (int i = 0; i < tokenLen; i++)
@@ -1792,13 +1667,11 @@ int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, con
         numTokens++;
     }
 
-    // Count required tokens (non‑exclude)
     int requiredCount = 0;
     for (int i = 0; i < numTokens; i++)
         if (!tokens[i].exclude) requiredCount++;
     if (requiredCount == 0) return 0;
 
-    // Match against item names
     int capacity = 0, count = 0;
     const char **items = NULL;
 
@@ -1822,7 +1695,6 @@ int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, con
         }
         if (!match) continue;
 
-        // Duplicate check
         int dup = 0;
         for (int k = 0; k < count; k++) {
             if (strcmp(items[k], dbName) == 0) {
@@ -1875,7 +1747,6 @@ PUU32 LocationMatch( PUU8* LocationName, PUU8* LocationSearch )
     PUU8 c, OpenBracketFlag = FALSE, YCoordFlag = FALSE;
     double x, y, xfrom, xto, yfrom, yto;
 
-    // pull Name, CoordX, CoordY
     pChar = Name;
     do
     {
@@ -1899,7 +1770,6 @@ PUU32 LocationMatch( PUU8* LocationName, PUU8* LocationSearch )
     }
     while( c );
 
-    // pull Search, SearchCoordXFrom, SearchCoordXTo, SearchCoordYFrom, SearchCoordYTo
     OpenBracketFlag = FALSE;
     pChar = Search;
     do
@@ -1938,11 +1808,9 @@ PUU32 LocationMatch( PUU8* LocationName, PUU8* LocationSearch )
     }
     while( c );
 
-    // compare LocationName to LocationSearch
     if( ItemMatch( Name, Search ) )
     {
 
-        // if matched, compare coordtinates
         x = atof( CoordX );
         y = atof( CoordY );
         xfrom = atof( SearchCoordXFrom );
@@ -1951,30 +1819,25 @@ PUU32 LocationMatch( PUU8* LocationName, PUU8* LocationSearch )
         yto = atof( SearchCoordYTo );
 
         if( x > 0 && y > 0 && xfrom > 0 && yfrom > 0 )
-        { // carry on only if we have mission location
+        {
             if( ( x >= xfrom && ( x <= xto || !xto ) ) && ( y >= yfrom && ( y <= yto || !yto ) ) )
             {
-                return TRUE; // loc name matched, coords matched
+                return TRUE;
             }
             else
             {
-                return FALSE; // loc name matched; coonds wrong
+                return FALSE;
             }
         }
         else
         {
-            return TRUE; // loc name matched; won't compare coords
+            return TRUE;
         }
     }
 
-    return FALSE; // loc name didn't match
+    return FALSE;
 }
 
-
-/*******************************
-Various parts borrowed from AOMD
-(database access, PNG unpacking, playfield names, find item name finder)
-********************************/
 void GetMissionItem( MissionItem* _pMissionItem, PUU32 _ItemKey1, PUU32
                      _ItemKey2, PUU32 _QL )
 {
@@ -1986,13 +1849,12 @@ void GetMissionItem( MissionItem* _pMissionItem, PUU32 _ItemKey1, PUU32
         goto FetchItemName_Err_NotFound;
     }
 
-    /* Get description for item number 1 */
     if( !GetAODBItem( &sItem1, _ItemKey1 ) )
     {
         goto FetchItemName_Err_NotFound;
     }
 
-    /* If no item number 2, then just keep the first description */
+
     if( !_ItemKey2 || _ItemKey2 == _ItemKey1 )
 		{
 			strncpy(_pMissionItem->pName, sItem1.pName, AODB_MAX_NAME_LEN);
@@ -2000,7 +1862,7 @@ void GetMissionItem( MissionItem* _pMissionItem, PUU32 _ItemKey1, PUU32
 			_pMissionItem->IconKey = sItem1.IconKey;
 			_pMissionItem->Value = sItem1.Value;
 		}
-    /* Item number 2 exists, must interpolate */
+
     else
     {
         if( !GetAODBItem( &sItem2, _ItemKey2 ) )
@@ -2031,7 +1893,6 @@ void GetMissionItem( MissionItem* _pMissionItem, PUU32 _ItemKey1, PUU32
         }
     }
 
-    /* Success */
     return;
 
 FetchItemName_Err_NotFound:
@@ -2040,8 +1901,6 @@ FetchItemName_Err_NotFound:
     return;
 }
 
-
-/* Get item Data from AO Database */
 PUU8 GetAODBItem( MissionItem* _pMissionItem, PUU32 _ItemKey )
 {
     PUU8 *a_xData;
@@ -2088,8 +1947,6 @@ typedef struct png_pixel_struc
 #define LEN_PNGSIG 0x8
 PUU8 a_xPNGSig[ LEN_PNGSIG ] = { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
 
-
-/* Get item icon from AO Database */
 PUU8 *GetAOIconData( unsigned long lIconNo )
 {
     unsigned long lDataLen;
@@ -2113,45 +1970,27 @@ PUU8 *GetAOIconData( unsigned long lIconNo )
     char strChunkID[ 5 ];
     udtPNGihdr_struc *udtPNGihdr;
     udtPNGsbit_struc *udtPNGsbit;
-    //FILE *fpDebug;
+
     PUU8* pImageData = NULL;
     PUU8* pTmp;
 
-    /* Initialise */
     a_xData = NULL;
     a_xPNGImage = NULL;
     a_xPNGRowPrev = NULL;
 
-    /* Read data for this item */
     if( !( a_xData = GetDataChunk( AODB_TYP_ICON, lIconNo, &lDataLen ) ) )
     {
         goto GetAOIconData_Exit_Fail;
     }
 
-    /* Check it contains a valid PNG */
-    a_xPNG = a_xData; // + 0x18;
-    lPNGLen = lDataLen; // - 0x18;
+    a_xPNG = a_xData;
+    lPNGLen = lDataLen;
     if( memcmp( a_xPNG, a_xPNGSig, LEN_PNGSIG ) != 0 )
     {
         goto GetAOIconData_Exit_Fail;
     }
-    a_xPNGChunk = a_xPNG + 0x8;     // Point to first chunk
+    a_xPNGChunk = a_xPNG + 0x8;
 
-    /* Write PNG icon to file */
-    /*
-    if( lDebug & DBG_ICN )
-    {
-        sprintf( strDebugFile, "%sDebug_IconsPNG.DAT", strAOMDPath );
-        fpDebug = fopen( strDebugFile, "a+b" );
-        fwrite( a_xPNG, sizeof( PUU8 ), lPNGLen, fpDebug );
-        fwrite( "****************", sizeof( char ), 0x10 - ( lPNGLen % 0x10 ),
-                fpDebug );
-        fwrite( "****************", sizeof( char ), 0x10, fpDebug );
-        fclose( fpDebug );
-    }
-    */
-
-    /* Check IHDR chunk - Start of PNG, contains icon properties */
     lChunkLen = EndianSwap32( *(unsigned long *)( a_xPNGChunk ) );
     lChunkLen += 0xC;
     memcpy( strChunkID, ( a_xPNGChunk + 0x4 ), 4 );
@@ -2161,29 +2000,27 @@ PUU8 *GetAOIconData( unsigned long lIconNo )
         goto GetAOIconData_Exit_Fail;
     }
     udtPNGihdr = (udtPNGihdr_struc *)( a_xPNGChunk + 0x8 );
-    udtPNGihdr->lWidth = EndianSwap32( udtPNGihdr->lWidth );  // Fix endian
-    udtPNGihdr->lHeight = EndianSwap32( udtPNGihdr->lHeight );    // Fix endian
-    a_xPNGChunk += lChunkLen;   // Bump to next chunk
-
-    /* Ensure PNG properties are what we expect from AO */
+    udtPNGihdr->lWidth = EndianSwap32( udtPNGihdr->lWidth );
+    udtPNGihdr->lHeight = EndianSwap32( udtPNGihdr->lHeight );
+    a_xPNGChunk += lChunkLen;
+	
     if( ( udtPNGihdr->lWidth != 48 ) || ( udtPNGihdr->lHeight != 48 ) )
     {
-        goto GetAOIconData_Exit_Fail;   // not a 48x48 image
+        goto GetAOIconData_Exit_Fail;
     }
     if( ( udtPNGihdr->xBitDepth != 8 ) || ( udtPNGihdr->xColorType != 2 ) )
     {
-        goto GetAOIconData_Exit_Fail;   // not 24bit RGB
+        goto GetAOIconData_Exit_Fail;
     }
     if( ( udtPNGihdr->xCompressMethod != 0 ) || ( udtPNGihdr->xFilterMethod != 0 ) )
     {
-        goto GetAOIconData_Exit_Fail;   // non-standard compression or filter
+        goto GetAOIconData_Exit_Fail;
     }
     if( udtPNGihdr->xInterlaceMethod != 0 )
     {
-        goto GetAOIconData_Exit_Fail;   // must not be interlaced
+        goto GetAOIconData_Exit_Fail;
     }
 
-    /* Check SBIT chunk - Significant bits */
     lChunkLen = EndianSwap32( *(unsigned long *)( a_xPNGChunk ) );
     lChunkLen += 0xC;
     memcpy( strChunkID, ( a_xPNGChunk + 0x4 ), 4 );
@@ -2193,9 +2030,8 @@ PUU8 *GetAOIconData( unsigned long lIconNo )
         goto GetAOIconData_Exit_Fail;
     }
     udtPNGsbit = (udtPNGsbit_struc *)( a_xPNGChunk + 0x8 );
-    a_xPNGChunk += lChunkLen;   // Bump to next chunk
+    a_xPNGChunk += lChunkLen;
 
-    /* Check IDAT chunk - Contains the icon data*/
     lPNGDataLen = EndianSwap32( *(unsigned long *)( a_xPNGChunk ) );
     lChunkLen = lPNGDataLen + 0xC;
     memcpy( strChunkID, ( a_xPNGChunk + 0x4 ), 4 );
@@ -2205,17 +2041,14 @@ PUU8 *GetAOIconData( unsigned long lIconNo )
         goto GetAOIconData_Exit_Fail;
     }
     a_xPNGData = a_xPNGChunk + 0x8;
-    a_xPNGChunk += lChunkLen;   // Bump to next chunk
+    a_xPNGChunk += lChunkLen;
 
-    /* Allocate bitmap */
     lBytesPerRow = ( ( ( udtPNGihdr->lWidth * 24 ) + 31 ) / 32 ) * 4;
     if( !( pImageData = malloc( udtPNGihdr->lHeight * lBytesPerRow ) ) )
     {
         goto GetAOIconData_Exit_Fail;
     }
 
-
-    /* Decompress the PNG image data using ZLib */
     lPNGImageLen = udtPNGihdr->lHeight * ( lBytesPerRow + 1 );
     a_xPNGImage = (PUU8 *)malloc( lPNGImageLen );
     if( uncompress( a_xPNGImage, &lPNGImageLen, a_xPNGData, lPNGDataLen ) != Z_OK )
@@ -2223,11 +2056,9 @@ PUU8 *GetAOIconData( unsigned long lIconNo )
         goto GetAOIconData_Exit_Fail;
     }
 
-    /* Allocate previous row buffer and init to zero */
     a_xPNGRowPrev = (PUU8 *)malloc( lBytesPerRow );
     memset( a_xPNGRowPrev, 0, lBytesPerRow );
 
-    /* Filter each row and copy to bitmap */
     for( lLoop = 0; lLoop < udtPNGihdr->lHeight; lLoop++ )
     {
         lPNGRowOffset = lLoop * ( lBytesPerRow + 1 );
@@ -2235,11 +2066,9 @@ PUU8 *GetAOIconData( unsigned long lIconNo )
         a_xPNGRow = a_xPNGImage + lPNGRowOffset + 1;
         switch( xFilter )
         {
-            /* Filter 0 - None */
         case 0:
             break;
 
-            /* Filter 1 - Sub */
         case 1:
             udtCLinCByt = (udtPNGpixel_struc *)a_xPNGRow + 1;
             udtCLinPByt = (udtPNGpixel_struc *)a_xPNGRow;
@@ -2256,7 +2085,6 @@ PUU8 *GetAOIconData( unsigned long lIconNo )
             }
             break;
 
-            /* Filter 2 - Up */
         case 2:
             udtCLinCByt = (udtPNGpixel_struc *)a_xPNGRow;
             udtPLinCByt = (udtPNGpixel_struc *)a_xPNGRowPrev;
@@ -2273,7 +2101,6 @@ PUU8 *GetAOIconData( unsigned long lIconNo )
             }
             break;
 
-            /* Filter 3 - Average */
         case 3:
             udtCLinCByt = (udtPNGpixel_struc *)a_xPNGRow;
             udtPLinCByt = (udtPNGpixel_struc *)a_xPNGRowPrev;
@@ -2300,7 +2127,6 @@ PUU8 *GetAOIconData( unsigned long lIconNo )
             }
             break;
 
-            /* Filter 4 - Paeth */
         case 4:
             udtCLinCByt = (udtPNGpixel_struc *)a_xPNGRow;
             udtPLinCByt = (udtPNGpixel_struc *)a_xPNGRowPrev;
@@ -2372,20 +2198,14 @@ PUU8 *GetAOIconData( unsigned long lIconNo )
             }
             break;
 
-            /* Unknown filter value */
         default:
             goto GetAOIconData_Exit_Fail;
         }
 
-        /* Copy processed row to bitmap (have to do this pixel by pixel because
-PNG is RGB but DIB is BGR) */
         udtPNGpixel = (udtPNGpixel_struc *)a_xPNGRow;
         pTmp = pImageData + lBytesPerRow * lLoop;
-        //      rgbDIBpixel = (RGBTRIPLE *)((PUU8 *)(bmiDIB->bmiColors) + (((udtPNGihdr->lHeight - 1) - lLoop) * lBytesPerRow));
         for( lLoop2 = 0; lLoop2 < ( lBytesPerRow / 3 ); lLoop2++ )
         {
-            // PUL doesn't handle color key on images yet and I don't have MSDNs at hand
-            // to implement it, so in the meantime... :)
             if( udtPNGpixel->xGreen == 255 && !udtPNGpixel->xRed && !udtPNGpixel->xBlue )
             {
                 *pTmp++ = 100;
@@ -2401,15 +2221,12 @@ PNG is RGB but DIB is BGR) */
             udtPNGpixel++;
         }
 
-        /* Copy processed row to previous row buffer */
         memcpy( a_xPNGRowPrev, a_xPNGRow, lBytesPerRow );
     }
-
-    /* Release previous row buffer */
+	
     free( a_xPNGRowPrev );
     a_xPNGRowPrev = NULL;
 
-    /* Check IEND chunk - This marks the end of PNG */
     memcpy( strChunkID, ( a_xPNGChunk + 0x4 ), 4 );
     strChunkID[ 4 ] = 0;
     if( _stricmp( strChunkID, "IEND" ) != 0 )
@@ -2417,30 +2234,13 @@ PNG is RGB but DIB is BGR) */
         goto GetAOIconData_Exit_Fail;
     }
 
-    /* Release the PNG image and data chunk */
     free( a_xPNGImage );
     a_xPNGImage = NULL;
     free( a_xData );
 
-    /* Write icon bitmap to file */
-    /*
-    if( lDebug & DBG_ICN )
-    {
-        sprintf( strDebugFile, "%sDebug_IconsBMP.DAT", strAOMDPath );
-        fpDebug = fopen( strDebugFile, "a+b" );
-        fwrite( &bmiBMPhdr, sizeof( BITMAPFILEHEADER ), 1, fpDebug );
-        fwrite( bmiDIB, sizeof( PUU8 ), lDIBsize, fpDebug );
-        fwrite( "****************", sizeof( char ), 0x10 - ( ( sizeof( BITMAPFILEHEADER )
-            + lDIBsize ) % 0x10 ), fpDebug );
-        fwrite( "****************", sizeof( char ), 0x10, fpDebug );
-        fclose( fpDebug );
-    }
-    */
-
-    /* Success - return the bitmap */
     return pImageData;
 
-GetAOIconData_Exit_Fail:    // Cleanup
+GetAOIconData_Exit_Fail:
     free( pImageData );
     free( a_xPNGRowPrev );
     free( a_xPNGImage );
@@ -2512,9 +2312,6 @@ static udtFindName_struc a_udtFindName[CNT_FINDNAME] = {
 	
 };
 
-
-
-// Helper: case‑insensitive substring search with length limit
 static long FindSubstringCI(const PUU8* haystack, unsigned long haystackLen, const char* needle)
 {
     unsigned long needleLen = strlen(needle);
@@ -2534,13 +2331,11 @@ static long FindSubstringCI(const PUU8* haystack, unsigned long haystackLen, con
 
 static int FindItemInDescriptionFromCache(const PUU8* desc, unsigned long descLen, PUU8* outName) {
     if (!g_itemIndex || g_itemIndexSize == 0) return 0;
-    
-    // Normalize the entire description (convert to lowercase, remove apostrophes)
+
     char* normDesc = malloc(descLen + 1);
     if (!normDesc) return 0;
     NormalizeString((const char*)desc, normDesc, descLen + 1);
-    
-    // Tokenize description into words (split by spaces/punctuation)
+
     char* words[1024];
     int wordCount = 0;
     char* token;
@@ -2550,19 +2345,15 @@ static int FindItemInDescriptionFromCache(const PUU8* desc, unsigned long descLe
 		words[wordCount++] = token;
 		token = strtok_s(NULL, " .,!?;:\t\n\r", &context);
 	}
-    
-    // For each word, look up items starting with that word
+	
     const char* bestMatch = NULL;
     int bestLen = 0;
     
     for (int i = 0; i < wordCount; i++) {
-        // Find index entries matching this word
         for (int j = 0; j < g_itemIndexSize; j++) {
             if (strcmp(words[i], g_itemIndex[j].firstWord) != 0) continue;
-            // Check each item in this bucket
             for (int k = 0; k < g_itemIndex[j].count; k++) {
                 const char* item = g_itemIndex[j].items[k];
-                // Normalized version of item? We'll do substring search in normalized desc
                 char normItem[512];
                 NormalizeString(item, normItem, sizeof(normItem));
                 if (strstr(normDesc, normItem) != NULL) {
@@ -2586,19 +2377,15 @@ static int FindItemInDescriptionFromCache(const PUU8* desc, unsigned long descLe
     return 0;
 }
 
-// Main extraction function
 PUU32 MissionFind(PUU8* _pMissionDesc, PUU32 _DescLen, PUU8* _pItemName)
 {
 	if (_pItemName) _pItemName[0] = '\0';
-    // First, try to find item from cache (most reliable)
     if (FindItemInDescriptionFromCache(_pMissionDesc, _DescLen, _pItemName)) {
-        // Extra validation: ensure it's not a filtered item (optional)
         if (!ShouldSkipItemName((const char*)_pItemName)) {
             return TRUE;
         }
     }
 	
-    // Safety: convert to char pointers for easier arithmetic
     const char* desc = (const char*)_pMissionDesc;
     const char* descEnd = desc + _DescLen;
 
@@ -2606,7 +2393,6 @@ PUU32 MissionFind(PUU8* _pMissionDesc, PUU32 _DescLen, PUU8* _pItemName)
         const char* item = g_common_items[i];
         long pos = FindSubstringCI(_pMissionDesc, _DescLen, item);
         if (pos >= 0) {
-            // Copy the exact common item name (not the whole sub‑string)
             strncpy((char*)_pItemName, item, 255);
             _pItemName[255] = '\0';
             return TRUE;
@@ -2626,11 +2412,9 @@ PUU32 MissionFind(PUU8* _pMissionDesc, PUU32 _DescLen, PUU8* _pItemName)
                                    (PUU8*)a_udtFindName[lLoop].strEnd,
                                    strlen(a_udtFindName[lLoop].strEnd));
             if (lLength >= 0) {
-				// Cap length to leave room for null terminator
 				if (lLength > 255) lLength = 255;
 				memcpy(_pItemName, strStart, lLength);
 				_pItemName[lLength] = 0;
-                // Trim trailing spaces
                 size_t len = strlen(_pItemName);
                 while (len > 0 && _pItemName[len-1] == ' ') _pItemName[--len] = '\0';
                 if (IsValidItemName((char*)_pItemName)) {
@@ -2655,17 +2439,12 @@ PUU32 MissionFind(PUU8* _pMissionDesc, PUU32 _DescLen, PUU8* _pItemName)
         const char* start = desc + pos + strlen(triggers[t]);
         while (start < descEnd && *start == ' ') start++;
         if (start >= descEnd) continue;
-        // Require that the first character is uppercase (A-Z)
         if (!(*start >= 'A' && *start <= 'Z')) continue;
         const char* end = start;
         while (end < descEnd && *end != '.') {
-            // Stop at !! or !
             if (*end == '!' && (end[1] == '!' || end[1] == ' ' || end[1] == '\0')) break;
-            // Stop at ", " (comma then space)
             if (*end == ',' && end + 2 <= descEnd && end[1] == ' ') break;
-			// Stop at &mdash;
             if (strncmp(end, "&mdash;", 7) == 0) break;
-            // Stop at space followed by certain words
             if (*end == ' ' && end + 6 <= descEnd) {
                 if (strncmp(end, " in ", 4) == 0 ||
                     strncmp(end, " from ", 6) == 0 ||
@@ -2689,8 +2468,7 @@ PUU32 MissionFind(PUU8* _pMissionDesc, PUU32 _DescLen, PUU8* _pItemName)
         if (len > 0 && len < 256) {
             memcpy(_pItemName, start, len);
                 _pItemName[len] = '\0';
-                // Trim trailing spaces
-                size_t len2 = strlen(_pItemName);  // use different variable name to avoid shadowing
+                size_t len2 = strlen(_pItemName);
                 while (len2 > 0 && _pItemName[len2-1] == ' ') _pItemName[--len2] = '\0';
                 if (IsValidItemName((char*)_pItemName)) {
                     return TRUE;
