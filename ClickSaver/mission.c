@@ -47,6 +47,7 @@ static PUU8 g_bIsFindItem = 0;
 static PUU8 g_bIsReturnMission = 0;
 static PUU32 g_bRewardMatched = 0;
 extern PULID g_DisabledItemWatchList;
+extern void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const char* findItem);
 extern sqlite3* g_pSQLite;
 
 
@@ -1135,17 +1136,20 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
 		}
 	        LogMissionDescription(TempVal, TempStr, pDesc, DescLength);
 
-    if( bAccept ) {
-        if( g_FoundMish == 255 ) g_FoundMish = g_MishNumber;
-        if( g_BuyingAgentCount ) {
-            g_BuyingAgentCount = 0;
-        } else {
-            if( puGetAttribute( puGetObjectFromCollection( g_pCol, CS_MSGBOX_CB ), PUA_CHECKBOX_CHECKED ) && !g_bFullscreen ) {
-                puSetAttribute( g_MainWin, PUA_WINDOW_ICONIFIED, FALSE );
-                puSetAttribute( puGetObjectFromCollection( g_pCol, CS_WATCH_MSGBOX ), PUA_WINDOW_OPENED, TRUE );
-            }
-        }
-    }
+        if( bAccept ) {
+			if (!g_bUpdatingCounters) {
+				LogAcceptedMission(MishPF, CoordX, CoordY, TempVal, TempStr);
+			}
+			if( g_FoundMish == 255 ) g_FoundMish = g_MishNumber;
+			if( g_BuyingAgentCount ) {
+				g_BuyingAgentCount = 0;
+			} else {
+				if( puGetAttribute( puGetObjectFromCollection( g_pCol, CS_MSGBOX_CB ), PUA_CHECKBOX_CHECKED ) && !g_bFullscreen ) {
+					puSetAttribute( g_MainWin, PUA_WINDOW_ICONIFIED, FALSE );
+					puSetAttribute( puGetObjectFromCollection( g_pCol, CS_WATCH_MSGBOX ), PUA_WINDOW_OPENED, TRUE );
+				}
+			}
+		}
 	#undef CHECK_BOUNDS
     return (PUU32)_pMissionData;
 }

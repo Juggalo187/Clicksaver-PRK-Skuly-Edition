@@ -206,6 +206,6 @@ void* GetDataChunk( PUU32 _KeyHi, PUU32 _KeyLo, PUU32* _pSize );
 void DebugPacket( void* pData, unsigned int length );
 void WriteLog( const char* Format, ... );
 void WriteDebug( const char* txt );
-
+void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const char* findItem);
 
 #endif

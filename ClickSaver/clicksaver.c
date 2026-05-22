@@ -87,6 +87,17 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #define MATCH_AUTO_THRESHOLD 1
 
+#include <time.h>
+
+static FILE* g_AcceptedLogFile = NULL;
+static int g_LoggedPlayfieldCount = 0;
+static char** g_LoggedPlayfieldNames = NULL;
+static int g_LoggedPlayfieldCapacity = 0;
+
+void ResetAcceptedMissionLog(void);
+void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const char* findItem);
+void CloseAcceptedMissionLog(void);
+
 sqlite3*      g_pSQLite = NULL;
 sqlite3_stmt* g_stmtItem = NULL;
 sqlite3_stmt* g_stmtIcon = NULL;
@@ -1428,7 +1439,7 @@ typedef enum ImportSettingsMode
     ISM_DONE,
 } ImportSettingsMode;
 
-int OpenLocalDB()
+/* int OpenLocalDB()
 {
 	char DBPath[MAX_PATH];
 	sprintf(DBPath, "%s\\cd_image\\rdb.db", g_AODir);
@@ -1442,6 +1453,41 @@ if (sqlite3_open_v2(DBPath, &g_pSQLite, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK
 	sqlite3_prepare_v2(g_pSQLite, "SELECT data FROM rdb_1000001 WHERE id = ?;", -1, &g_stmtPF, NULL);
 
 	return TRUE;
+} */
+
+int OpenLocalDB()
+{
+    char DBPath[MAX_PATH];
+    sprintf(DBPath, "%s\\cd_image\\rdb.db", g_AODir);
+
+    if (sqlite3_open_v2(DBPath, &g_pSQLite, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
+    {
+        return FALSE;
+    }
+	
+    if (sqlite3_exec(g_pSQLite, "PRAGMA quick_check;", NULL, NULL, NULL) != SQLITE_OK)
+    {
+        sqlite3_close(g_pSQLite);
+        g_pSQLite = NULL;
+        return FALSE;
+    }
+
+    if (sqlite3_prepare_v2(g_pSQLite, "SELECT data FROM rdb_1000020 WHERE id = ?;", -1, &g_stmtItem, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(g_pSQLite, "SELECT data FROM rdb_1010008 WHERE id = ?;", -1, &g_stmtIcon, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(g_pSQLite, "SELECT data FROM rdb_1000001 WHERE id = ?;", -1, &g_stmtPF, NULL) != SQLITE_OK)
+    {
+        sqlite3_finalize(g_stmtItem);
+        sqlite3_finalize(g_stmtIcon);
+        sqlite3_finalize(g_stmtPF);
+        sqlite3_close(g_pSQLite);
+        g_pSQLite = NULL;
+        g_stmtItem = NULL;
+        g_stmtIcon = NULL;
+        g_stmtPF = NULL;
+        return FALSE;
+    }
+
+    return TRUE;
 }
 
 void* GetDataChunk(PUU32 _KeyHi, PUU32 _KeyLo, PUU32* _pSize)
@@ -2388,6 +2434,7 @@ if (!LoadItemNameCache(cachePath)) {
 
                 if( bReadyToGo )
                 {
+					ResetAcceptedMissionLog();
                     ClearItemCounters();
                     g_bBuyingAgentActive = 1;
 					g_bPaused = 0; 
@@ -2581,6 +2628,7 @@ void CleanUp()
 	ReleaseAODatabase();
 	FreeDialogColors();
 
+	CloseAcceptedMissionLog();
     puDeleteObjectCollection( g_pCol );
     puClear();
 	FreeItemNameCache();
@@ -3243,6 +3291,110 @@ void EndBuyingAgent()
 			SetFocus( hMainWnd );
 			SetWindowPos( hMainWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE );
 		}
+}
+
+static const char* MissionTypeIdToString(PUU32 type) {
+    switch (type) {
+        case 0x2c4e:  return "Repair";
+        case 0x26add: return "Return Item";
+        case 0x2c47:  return "Find Person";
+        case 0x2c49:  return "Find Item";
+        case 0x2c42:  return "Kill Person";
+        default:      return "Unknown";
+    }
+}
+
+static void GetPlayfieldName(int zoneId, char* buf, size_t bufSize) {
+    buf[0] = '\0';
+    PUU8* pData = GetDataChunk(AODB_TYP_PF, zoneId, NULL);
+    if (pData) {
+        strncpy(buf, (char*)pData, bufSize - 1);
+        buf[bufSize - 1] = '\0';
+        free(pData);
+    } else {
+        snprintf(buf, bufSize, "Zone %d", zoneId);
+    }
+}
+
+void ResetAcceptedMissionLog(void) {
+    if (g_AcceptedLogFile) {
+        fclose(g_AcceptedLogFile);
+        g_AcceptedLogFile = NULL;
+    }
+    // Clear playfield tracking
+    for (int i = 0; i < g_LoggedPlayfieldCount; i++) {
+        free(g_LoggedPlayfieldNames[i]);
+    }
+    free(g_LoggedPlayfieldNames);
+    g_LoggedPlayfieldNames = NULL;
+    g_LoggedPlayfieldCount = g_LoggedPlayfieldCapacity = 0;
+
+    // Open log file in append mode (creates if needed)
+    g_AcceptedLogFile = fopen("AcceptedMissions.txt", "a");
+    if (!g_AcceptedLogFile) {
+        DisplayErrorMessage("Could not open AcceptedMissions.txt for writing.", TRUE);
+        return;
+    }
+
+    time_t now = time(NULL);
+    struct tm* tm_info = localtime(&now);
+    char timeBuf[64];
+    strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", tm_info);
+    fprintf(g_AcceptedLogFile, "\n=== New Session: %s ===\n", timeBuf);
+    fflush(g_AcceptedLogFile);
+}
+
+void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const char* findItem) {
+    if (!g_AcceptedLogFile) return;
+
+    char pfName[256];
+    GetPlayfieldName(zoneId, pfName, sizeof(pfName));
+
+    // Check if this playfield header has already been written in this session
+    int headerWritten = 0;
+    for (int i = 0; i < g_LoggedPlayfieldCount; i++) {
+        if (strcmp(g_LoggedPlayfieldNames[i], pfName) == 0) {
+            headerWritten = 1;
+            break;
+        }
+    }
+    if (!headerWritten) {
+        // Add to tracked list
+        if (g_LoggedPlayfieldCount >= g_LoggedPlayfieldCapacity) {
+            g_LoggedPlayfieldCapacity = g_LoggedPlayfieldCapacity ? g_LoggedPlayfieldCapacity * 2 : 16;
+            g_LoggedPlayfieldNames = realloc(g_LoggedPlayfieldNames, g_LoggedPlayfieldCapacity * sizeof(char*));
+        }
+        g_LoggedPlayfieldNames[g_LoggedPlayfieldCount++] = _strdup(pfName);
+        fprintf(g_AcceptedLogFile, "\n[%s]\n", pfName);
+    }
+
+    const char* missionType = MissionTypeIdToString(missionTypeId);
+    // Build a descriptive mission name: e.g., "Find Item (QL...)" but we don't have QL here.
+    // Use the findItem if available and meaningful.
+    char missionDesc[512];
+    if (findItem && findItem[0] && (missionTypeId == 0x2c49 || missionTypeId == 0x26add)) {
+        snprintf(missionDesc, sizeof(missionDesc), "%s (%s)", missionType, findItem);
+    } else {
+        snprintf(missionDesc, sizeof(missionDesc), "%s", missionType);
+    }
+
+    // Write the entry: "MissionType - PlayfieldName - /waypoint x y zoneId"
+    fprintf(g_AcceptedLogFile, "%s - %s - /waypoint %.1f %.1f %d\n",
+            missionDesc, pfName, x, y, zoneId);
+    fflush(g_AcceptedLogFile);
+}
+
+void CloseAcceptedMissionLog(void) {
+    if (g_AcceptedLogFile) {
+        fclose(g_AcceptedLogFile);
+        g_AcceptedLogFile = NULL;
+    }
+    for (int i = 0; i < g_LoggedPlayfieldCount; i++) {
+        free(g_LoggedPlayfieldNames[i]);
+    }
+    free(g_LoggedPlayfieldNames);
+    g_LoggedPlayfieldNames = NULL;
+    g_LoggedPlayfieldCount = g_LoggedPlayfieldCapacity = 0;
 }
 
 void UpdateAcceptedCountersForMission( int mishIndex )
