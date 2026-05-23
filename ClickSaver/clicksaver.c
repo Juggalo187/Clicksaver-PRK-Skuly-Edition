@@ -1761,6 +1761,10 @@ int main( int argc, char** argv )
 
     ImportSettings( "LastSettings.cs" );
 	
+	// Sync the delay GUI control with the actual g_BuyingAgentDelay value
+	PULID delayCtrl = puGetObjectFromCollection(g_pCol, CS_BUYINGAGENTDELAY_ENTRY);
+	if (delayCtrl) puSetAttribute(delayCtrl, PUA_TEXTENTRY_VALUE, g_BuyingAgentDelay);
+	
 	if( puGetAttribute( puGetObjectFromCollection( g_pCol, CS_STARTMIN_CB ), PUA_CHECKBOX_CHECKED ) )
         puSetAttribute( g_MainWin, PUA_WINDOW_ICONIFIED, TRUE );
 
@@ -2055,8 +2059,14 @@ if (!LoadItemNameCache(cachePath)) {
 				PULID delayCtrl = puGetObjectFromCollection( g_pCol, CS_BUYINGAGENTDELAY_ENTRY );
 				if (delayCtrl) {
 					int newDelay = puGetAttribute( delayCtrl, PUA_TEXTENTRY_VALUE );
-					if (newDelay >= 5010 && newDelay <= 10000) {
+					if (newDelay >= 4800 && newDelay <= 15000) {
 						g_BuyingAgentDelay = newDelay;
+					} else {
+						// Clamp and update the GUI to show the clamped value
+						if (newDelay < 4800) newDelay = 4800;
+						if (newDelay > 15000) newDelay = 15000;
+						g_BuyingAgentDelay = newDelay;
+						puSetAttribute(delayCtrl, PUA_TEXTENTRY_VALUE, newDelay);
 					}
 				}
 				break;
@@ -2909,8 +2919,8 @@ void ImportSettings( char* filename )
                 case CFG_BUYINGAGENTDELAY:
 					sscanf( Value, "%u", &Val );
 					if (Val > 0) {
-						if (Val < 5010) Val = 5010;
-						if (Val > 10000) Val = 10000;
+						if (Val < 4800) Val = 4800;
+						if (Val > 15000) Val = 15000;
 						g_BuyingAgentDelay = Val;
 					}
 					break;
@@ -3075,7 +3085,21 @@ void ExportSettings( char* filename )
     fprintf( fp, "SLIDER_MONEY_XP::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_SLIDER_MONEY_XP ), PUA_TEXTENTRY_VALUE ) );
 
     fprintf( fp, "BUYMOD::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMVALUE_BUYMOD ), PUA_TEXTENTRY_VALUE ) );
-    fprintf( fp, "BUYINGAGENTDELAY::%u\n", g_BuyingAgentDelay );
+	
+    PULID delayCtrl = puGetObjectFromCollection(g_pCol, CS_BUYINGAGENTDELAY_ENTRY);
+	int delayValue = g_BuyingAgentDelay; // fallback
+	if (delayCtrl) {
+		HWND hEdit = (HWND)puGetAttribute(delayCtrl, PUA_WINDOW_HANDLE);
+		if (hEdit && IsWindow(hEdit)) {
+			char buf[32] = {0};
+			GetWindowTextA(hEdit, buf, sizeof(buf));
+			int val = atoi(buf);
+			if (val >= 4800 && val <= 15000)
+				delayValue = val;
+		}
+	}
+	fprintf(fp, "BUYINGAGENTDELAY::%u\n", delayValue);
+	
 	PULID baObj = puGetObjectFromCollection( g_pCol, CS_BUYINGAGENT_WINDOW );
 	if ( puGetAttribute( baObj, PUA_WINDOW_OPENED ) )
 	{
