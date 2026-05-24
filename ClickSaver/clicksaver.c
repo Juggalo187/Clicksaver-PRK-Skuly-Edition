@@ -87,15 +87,13 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #define MATCH_AUTO_THRESHOLD 1
 
-#include <time.h>
-
 static FILE* g_AcceptedLogFile = NULL;
 static int g_LoggedPlayfieldCount = 0;
 static char** g_LoggedPlayfieldNames = NULL;
 static int g_LoggedPlayfieldCapacity = 0;
 
 void ResetAcceptedMissionLog(void);
-void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const char* findItem);
+void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const char* findItem, PUU32 mishId, const char* missionTitle);
 void CloseAcceptedMissionLog(void);
 
 sqlite3*      g_pSQLite = NULL;
@@ -129,7 +127,7 @@ PULID g_DisabledItemWatchList;
 void _setSliders( int easy_hard, int good_bad, int order_chaos, int open_hidden, int phys_myst, int headon_stealth, int money_xp );
 
 PUU32 g_BuyingAgentCount = 0;
-PUU32 g_BuyingAgentDelay = 5010;
+PUU32 g_BuyingAgentDelay = 5200;
 PUU32 g_BuyingAgentMissions = 0;
 PUU32 g_BuyingAgentMaxTries = 0;
 PUU32 g_BuyingAgentMaxMissions = 0;
@@ -158,6 +156,10 @@ DWORD WINAPI HookManagerThread( void *pParam );
 
 static HBRUSH g_hDialogBgBrush = NULL;
 static HBRUSH g_hButtonBgBrush = NULL;
+
+static char** g_LoggedMissionKeys = NULL;
+static int g_LoggedMissionCount = 0;
+static int g_LoggedMissionCapacity = 0;
 
 static const char* const PROP_BUTTON_IDS = "ClickSaver_OwnerDrawButtons";
 
@@ -383,6 +385,7 @@ void FormatItemForDisplay(const char *raw, char *out, size_t outSize);
 void MakeTableEntry(char *dest, size_t destSize, const char *raw);
 
 #define TIMER_BUYINGAGENT 1
+#define TIMER_RESPONSE_WATCHDOG 2
 static UINT_PTR g_TimerID = 0;
 static int g_PendingAttemptNumber = 0;
 
@@ -1599,12 +1602,21 @@ static int HasActiveWatchlistItems()
 
 LRESULT CALLBACK MainWndProcHook( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData )
 {
-    if (uMsg == WM_TIMER && wParam == TIMER_BUYINGAGENT)
+    if (uMsg == WM_TIMER)
     {
-        KillTimer( hWnd, TIMER_BUYINGAGENT );
-        g_TimerID = 0;
-        puPostAppMessage( CSAM_BUYINGAGENT_TIMER, 0);
-        return 0;
+        if (wParam == TIMER_BUYINGAGENT)
+        {
+            KillTimer( hWnd, TIMER_BUYINGAGENT );
+            g_TimerID = 0;
+            puPostAppMessage( CSAM_BUYINGAGENT_TIMER, 0);
+            return 0;
+        }
+        else if (wParam == TIMER_RESPONSE_WATCHDOG)
+        {
+            KillTimer( hWnd, TIMER_RESPONSE_WATCHDOG );
+            puPostAppMessage( CSAM_NO_MISSION_RESPONSE, 0 );
+            return 0;
+        }
     }
     return DefSubclassProc( hWnd, uMsg, wParam, lParam );
 }
@@ -1760,8 +1772,8 @@ int main( int argc, char** argv )
     GetCurrentDirectory( MAX_PATH, g_CSDir );
 
     ImportSettings( "LastSettings.cs" );
+	ResetAcceptedMissionLog();
 	
-	// Sync the delay GUI control with the actual g_BuyingAgentDelay value
 	PULID delayCtrl = puGetObjectFromCollection(g_pCol, CS_BUYINGAGENTDELAY_ENTRY);
 	if (delayCtrl) puSetAttribute(delayCtrl, PUA_TEXTENTRY_VALUE, g_BuyingAgentDelay);
 	
@@ -1907,6 +1919,26 @@ if (!LoadItemNameCache(cachePath)) {
 
         switch( pAppMsg->Message )
         {
+		case CSAM_NO_MISSION_RESPONSE:
+			if (g_bBuyingAgentActive && g_BuyingAgentCount == 0 && g_BuyingAgentMissions > 0)
+			{
+				puSetAttribute(puGetObjectFromCollection(g_pCol, CS_BA_PROGRESS), PUA_TEXT_STRING, (PUU32)"");
+				PlaySound("notfound.wav", NULL, SND_FILENAME | SND_NODEFAULT);
+				puSetAttribute(puGetObjectFromCollection(g_pCol, CS_BA_STATUS), PUA_TEXT_STRING,
+							(PUU32)"Stopped: Maximum tries reached.");
+				
+				g_bBuyingAgentActive = 0;
+				g_bPaused = 0;
+				g_BuyingAgentCount = 0;
+				g_BuyingAgentMissions = 0;
+				ClearItemCounters();
+				
+				PULID pauseButton = puGetObjectFromCollection(g_pCol, CS_BUYINGAGENT_PAUSEBTN);
+				if (pauseButton) {
+					puSetAttribute(pauseButton, PUA_TEXT_STRING, (PUU32)"Pause");
+				}
+			}
+			break;
 		case CSAM_EDIT_ITEM:
 			{
 				PUU32 listView = puGetObjectFromCollection(g_pCol, CS_ITEMWATCH_LISTVIEW);
@@ -2059,11 +2091,10 @@ if (!LoadItemNameCache(cachePath)) {
 				PULID delayCtrl = puGetObjectFromCollection( g_pCol, CS_BUYINGAGENTDELAY_ENTRY );
 				if (delayCtrl) {
 					int newDelay = puGetAttribute( delayCtrl, PUA_TEXTENTRY_VALUE );
-					if (newDelay >= 4800 && newDelay <= 15000) {
+					if (newDelay >= 5200 && newDelay <= 15000) {
 						g_BuyingAgentDelay = newDelay;
 					} else {
-						// Clamp and update the GUI to show the clamped value
-						if (newDelay < 4800) newDelay = 4800;
+						if (newDelay < 5200) newDelay = 5200;
 						if (newDelay > 15000) newDelay = 15000;
 						g_BuyingAgentDelay = newDelay;
 						puSetAttribute(delayCtrl, PUA_TEXTENTRY_VALUE, newDelay);
@@ -2077,15 +2108,15 @@ if (!LoadItemNameCache(cachePath)) {
                     KillTimer( hMainWnd, TIMER_BUYINGAGENT );
                     g_TimerID = 0;
                 }
+				puSetAttribute(puGetObjectFromCollection(g_pCol, CS_BA_STATUS), PUA_TEXT_STRING,
+               (PUU32)"Buying agent stopped by user.");
                 g_BuyingAgentCount = 0;
                 g_BuyingAgentMissions = 0;
                 g_BuyingAgentMaxTries = 0;
                 g_BuyingAgentMaxMissions = 0;
                 g_TotalAttempts = 0;
                 puSetAttribute(puGetObjectFromCollection(g_pCol, CS_BA_PROGRESS), PUA_TEXT_STRING, (PUU32)"");
-                puSetAttribute(puGetObjectFromCollection(g_pCol, CS_BA_TOTAL), PUA_TEXT_STRING, (PUU32)"");
-                puSetAttribute(puGetObjectFromCollection(g_pCol, CS_BA_ACCEPTED), PUA_TEXT_STRING, (PUU32)"");
-                EndBuyingAgent();
+                EndBuyingAgent(0);
             break;
 			
         case CSAM_PAUSEBUYINGAGENT:
@@ -2177,6 +2208,12 @@ if (!LoadItemNameCache(cachePath)) {
 
                 g_BuyingAgentCount--;
                 g_TotalAttempts++;
+				
+				if (g_BuyingAgentCount == 0 && g_BuyingAgentMissions > 0)
+				{
+					HWND hWnd = (HWND)puGetAttribute(g_MainWin, PUA_WINDOW_HANDLE);
+					SetTimer(hWnd, TIMER_RESPONSE_WATCHDOG, 3000, NULL);
+				}
 
                 char buffer[64];
                 sprintf( buffer, "Current mission: Attempt %d of %d", g_PendingAttemptNumber, g_BuyingAgentMaxTries );
@@ -2196,11 +2233,13 @@ if (!LoadItemNameCache(cachePath)) {
             if( g_BuyingAgentCount ) {
                 if (g_bPaused) break;
                 if( PUL_GET_CB(CS_ALERTITEM_CB) && !HasActiveWatchlistItems() ) {
+					puSetAttribute(puGetObjectFromCollection(g_pCol, CS_BA_PROGRESS), PUA_TEXT_STRING, (PUU32)"");
 					PlaySound( "notfound.wav", NULL, SND_FILENAME | SND_NODEFAULT );
-					MessageBox( NULL, "All watched items have reached their quantity limits. Stopping.", "ClickSaver", MB_OK | MB_ICONINFORMATION | MB_SYSTEMMODAL );
+					puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BA_STATUS ), PUA_TEXT_STRING,
+									(PUU32)"Stopped: all item limits reached" );
 					g_BuyingAgentCount = 0;
 					g_BuyingAgentMissions = 0;
-					EndBuyingAgent();
+					EndBuyingAgent(1);
 					break;
 				}
                 
@@ -2238,18 +2277,20 @@ if (!LoadItemNameCache(cachePath)) {
                 puSetAttribute( g_MainWin, PUA_WINDOW_ICONIFIED, FALSE );
                 
                 if( g_BuyingAgentCount && !g_bPaused )
-                {
-                    BuyingAgent(g_BuyingAgentDelay);
-                }
-                else
-                {
-                    if( g_FoundMish == 255 )
-                    {
-                        PlaySound( "notfound.wav", NULL, SND_FILENAME | SND_NODEFAULT );
-                        MessageBox( NULL, "No mission found within maximum tries.", "ClickSaver", MB_OK | MB_ICONINFORMATION | MB_SYSTEMMODAL );
-                    }
-                    EndBuyingAgent();
-                }
+					{
+						BuyingAgent(g_BuyingAgentDelay);
+					}
+					else
+					{
+						if( g_FoundMish == 255 )
+						{
+							puSetAttribute(puGetObjectFromCollection(g_pCol, CS_BA_PROGRESS), PUA_TEXT_STRING, (PUU32)"");
+							PlaySound( "notfound.wav", NULL, SND_FILENAME | SND_NODEFAULT );
+							puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BA_STATUS ), PUA_TEXT_STRING,
+											(PUU32)"No mission found within maximum tries" );
+						}
+						EndBuyingAgent(1);
+					}
             }
 
             if( !g_BuyingAgentCount )
@@ -2345,11 +2386,13 @@ if (!LoadItemNameCache(cachePath)) {
                             UpdateAcceptedCountersForMission( g_FoundMish );
                             
                             if( PUL_GET_CB(CS_ALERTITEM_CB) && !HasActiveWatchlistItems() ) {
+								puSetAttribute(puGetObjectFromCollection(g_pCol, CS_BA_PROGRESS), PUA_TEXT_STRING, (PUU32)"");
 								PlaySound( "notfound.wav", NULL, SND_FILENAME | SND_NODEFAULT );
-								MessageBox( NULL, "All watched items have reached their quantity limits. Stopping.", "ClickSaver", MB_OK | MB_ICONINFORMATION | MB_SYSTEMMODAL );
+								puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BA_STATUS ), PUA_TEXT_STRING,
+												(PUU32)"Stopped: all item limits reached" );
 								g_BuyingAgentMissions = 0;
 								g_BuyingAgentCount = 0;
-								EndBuyingAgent();
+								EndBuyingAgent(1);
 								goto stop_buying_agent;
 							}
 
@@ -2389,14 +2432,16 @@ if (!LoadItemNameCache(cachePath)) {
 									g_BuyingAgentCount = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENTTRIES ), PUA_TEXTENTRY_VALUE );
 									BuyingAgent(g_BuyingAgentDelay);
 								}
-                             else
+								else
 								{
+									puSetAttribute(puGetObjectFromCollection(g_pCol, CS_BA_PROGRESS), PUA_TEXT_STRING, (PUU32)"");
 									PlaySound( "found.wav", NULL, SND_FILENAME | SND_NODEFAULT );
-									char msg[128];
-									sprintf(msg, "Accepted %d of %d missions", g_BuyingAgentMaxMissions, g_BuyingAgentMaxMissions);
-									MessageBox( NULL, msg, "ClickSaver", MB_OK | MB_ICONINFORMATION | MB_SYSTEMMODAL );
+									char statusMsg[128];
+									sprintf(statusMsg, "Completed: accepted %d missions", g_BuyingAgentMaxMissions);
+									puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BA_STATUS ), PUA_TEXT_STRING,
+													(PUU32)statusMsg );
 									
-									EndBuyingAgent();
+									EndBuyingAgent(1);
 									g_BuyingAgentCount = 0;
 								}
                         }
@@ -2444,7 +2489,7 @@ if (!LoadItemNameCache(cachePath)) {
 
                 if( bReadyToGo )
                 {
-					ResetAcceptedMissionLog();
+					StartNewAcceptedMissionSession();
                     ClearItemCounters();
                     g_bBuyingAgentActive = 1;
 					g_bPaused = 0; 
@@ -2919,7 +2964,7 @@ void ImportSettings( char* filename )
                 case CFG_BUYINGAGENTDELAY:
 					sscanf( Value, "%u", &Val );
 					if (Val > 0) {
-						if (Val < 4800) Val = 4800;
+						if (Val < 5200) Val = 5200;
 						if (Val > 15000) Val = 15000;
 						g_BuyingAgentDelay = Val;
 					}
@@ -3087,14 +3132,14 @@ void ExportSettings( char* filename )
     fprintf( fp, "BUYMOD::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMVALUE_BUYMOD ), PUA_TEXTENTRY_VALUE ) );
 	
     PULID delayCtrl = puGetObjectFromCollection(g_pCol, CS_BUYINGAGENTDELAY_ENTRY);
-	int delayValue = g_BuyingAgentDelay; // fallback
+	int delayValue = g_BuyingAgentDelay;
 	if (delayCtrl) {
 		HWND hEdit = (HWND)puGetAttribute(delayCtrl, PUA_WINDOW_HANDLE);
 		if (hEdit && IsWindow(hEdit)) {
 			char buf[32] = {0};
 			GetWindowTextA(hEdit, buf, sizeof(buf));
 			int val = atoi(buf);
-			if (val >= 4800 && val <= 15000)
+			if (val >= 5200 && val <= 15000)
 				delayValue = val;
 		}
 	}
@@ -3275,46 +3320,40 @@ int BuyingAgent( int delay )
     return TRUE;
 }
 
-void EndBuyingAgent()
+void EndBuyingAgent(int keepWindow)
 {
-    g_bBuyingAgentActive = 0;
-	g_bPaused = 0; 
+    g_bPaused = 0;
     ClearItemCounters();
-	
-    PULID pauseButton = puGetObjectFromCollection( g_pCol, CS_BUYINGAGENT_PAUSEBTN );
-    if (pauseButton) {
-        puSetAttribute(pauseButton, PUA_TEXT_STRING, (PUU32)"Pause");
-    }
-    PULID statusLabel = puGetObjectFromCollection( g_pCol, CS_BA_STATUS );
-    if (statusLabel) {
-        puSetAttribute(statusLabel, PUA_TEXT_STRING, (PUU32)"Running...");
-    }
 
-    if( !g_bFullscreen )
-		{
-			SetFocus( NULL );
-			
-			PULID baObj = puGetObjectFromCollection( g_pCol, CS_BUYINGAGENT_WINDOW );
-			HWND baWnd = (HWND)puGetAttribute( baObj, PUA_WINDOW_HANDLE );
-			if ( baWnd && IsWindow(baWnd) )
-			{
-				RECT r;
-				GetWindowRect( baWnd, &r );
-				puSetAttribute( baObj, PUA_WINDOW_XPOS, r.left );
-				puSetAttribute( baObj, PUA_WINDOW_YPOS, r.top );
-				g_BAWindowX = r.left;
-				g_BAWindowY = r.top;
-			}
-			
-			puSetAttribute( baObj, PUA_WINDOW_OPENED, FALSE );
-			puSetAttribute( g_MainWin, PUA_WINDOW_OPENED, TRUE );
-			HWND hMainWnd = (HWND)puGetAttribute( g_MainWin, PUA_WINDOW_HANDLE );
-			if (baWnd && IsWindow(baWnd))
-				RemoveWindowSubclass(baWnd, BAWndProcHook, 1);
-			SetForegroundWindow( hMainWnd );
-			SetFocus( hMainWnd );
-			SetWindowPos( hMainWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE );
-		}
+    if (!g_bFullscreen)
+    {
+        SetFocus(NULL);
+        
+        PULID baObj = puGetObjectFromCollection(g_pCol, CS_BUYINGAGENT_WINDOW);
+        HWND baWnd = (HWND)puGetAttribute(baObj, PUA_WINDOW_HANDLE);
+        if (baWnd && IsWindow(baWnd))
+        {
+            RECT r;
+            GetWindowRect(baWnd, &r);
+            puSetAttribute(baObj, PUA_WINDOW_XPOS, r.left);
+            puSetAttribute(baObj, PUA_WINDOW_YPOS, r.top);
+            g_BAWindowX = r.left;
+            g_BAWindowY = r.top;
+        }
+        
+        if (!keepWindow)
+        {
+            // Hide the buying agent window and restore the main window
+            puSetAttribute(baObj, PUA_WINDOW_OPENED, FALSE);
+            puSetAttribute(g_MainWin, PUA_WINDOW_OPENED, TRUE);
+            HWND hMainWnd = (HWND)puGetAttribute(g_MainWin, PUA_WINDOW_HANDLE);
+            if (baWnd && IsWindow(baWnd))
+                RemoveWindowSubclass(baWnd, BAWndProcHook, 1);
+            SetForegroundWindow(hMainWnd);
+            SetFocus(hMainWnd);
+            SetWindowPos(hMainWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        }
+    }
 }
 
 static const char* MissionTypeIdToString(PUU32 type) {
@@ -3349,6 +3388,12 @@ void ResetAcceptedMissionLog(void) {
     for (int i = 0; i < g_LoggedPlayfieldCount; i++) {
         free(g_LoggedPlayfieldNames[i]);
     }
+	
+	free(g_LoggedMissionKeys);
+    g_LoggedMissionKeys = NULL;
+    g_LoggedMissionCount = 0;
+    g_LoggedMissionCapacity = 0;
+	
     free(g_LoggedPlayfieldNames);
     g_LoggedPlayfieldNames = NULL;
     g_LoggedPlayfieldCount = g_LoggedPlayfieldCapacity = 0;
@@ -3368,7 +3413,37 @@ void ResetAcceptedMissionLog(void) {
     fflush(g_AcceptedLogFile);
 }
 
-void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const char* findItem) {
+void StartNewAcceptedMissionSession(void){
+    // If file isn't open yet (shouldn't happen after startup), fallback
+    if (!g_AcceptedLogFile) {
+        ResetAcceptedMissionLog();  // open and write header
+        return;
+    }
+
+    // Clear playfield cache
+    for (int i = 0; i < g_LoggedPlayfieldCount; i++)
+        free(g_LoggedPlayfieldNames[i]);
+    free(g_LoggedPlayfieldNames);
+    g_LoggedPlayfieldNames = NULL;
+    g_LoggedPlayfieldCount = g_LoggedPlayfieldCapacity = 0;
+
+    // Clear mission keys cache
+    for (int i = 0; i < g_LoggedMissionCount; i++)
+        free(g_LoggedMissionKeys[i]);
+    free(g_LoggedMissionKeys);
+    g_LoggedMissionKeys = NULL;
+    g_LoggedMissionCount = g_LoggedMissionCapacity = 0;
+
+    // Write a new session header
+    time_t now = time(NULL);
+    struct tm* tm_info = localtime(&now);
+    char timeBuf[64];
+    strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", tm_info);
+    fprintf(g_AcceptedLogFile, "\n=== New Session: %s ===\n", timeBuf);
+    fflush(g_AcceptedLogFile);
+}
+
+void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const char* findItem, PUU32 mishId, const char* missionTitle){
     if (!g_AcceptedLogFile) return;
 
     char pfName[256];
@@ -3383,7 +3458,6 @@ void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const
         }
     }
     if (!headerWritten) {
-        // Add to tracked list
         if (g_LoggedPlayfieldCount >= g_LoggedPlayfieldCapacity) {
             g_LoggedPlayfieldCapacity = g_LoggedPlayfieldCapacity ? g_LoggedPlayfieldCapacity * 2 : 16;
             g_LoggedPlayfieldNames = realloc(g_LoggedPlayfieldNames, g_LoggedPlayfieldCapacity * sizeof(char*));
@@ -3393,16 +3467,32 @@ void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const
     }
 
     const char* missionType = MissionTypeIdToString(missionTypeId);
-    // Build a descriptive mission name: e.g., "Find Item (QL...)" but we don't have QL here.
-    // Use the findItem if available and meaningful.
-    char missionDesc[512];
-    if (findItem && findItem[0] && (missionTypeId == 0x2c49 || missionTypeId == 0x26add)) {
-        snprintf(missionDesc, sizeof(missionDesc), "%s (%s)", missionType, findItem);
+     char missionDesc[512];
+    if (missionTitle && missionTitle[0]) {
+        snprintf(missionDesc, sizeof(missionDesc), "%s [%s]", missionType, missionTitle);
     } else {
         snprintf(missionDesc, sizeof(missionDesc), "%s", missionType);
     }
 
-    // Write the entry: "MissionType - PlayfieldName - /waypoint x y zoneId"
+    // Build a unique key including mission ID
+    char key[512];
+    snprintf(key, sizeof(key), "%u|%s|%s|%.1f|%.1f|%d", mishId, missionDesc, pfName, x, y, zoneId);
+
+    // Check session cache
+    for (int i = 0; i < g_LoggedMissionCount; i++) {
+        if (strcmp(key, g_LoggedMissionKeys[i]) == 0) {
+            return;  // already logged
+        }
+    }
+
+    // Add to cache
+    if (g_LoggedMissionCount >= g_LoggedMissionCapacity) {
+        g_LoggedMissionCapacity = g_LoggedMissionCapacity ? g_LoggedMissionCapacity * 2 : 16;
+        g_LoggedMissionKeys = realloc(g_LoggedMissionKeys, g_LoggedMissionCapacity * sizeof(char*));
+    }
+    g_LoggedMissionKeys[g_LoggedMissionCount++] = _strdup(key);
+
+    // Write to file
     fprintf(g_AcceptedLogFile, "%s - %s - /waypoint %.1f %.1f %d\n",
             missionDesc, pfName, x, y, zoneId);
     fflush(g_AcceptedLogFile);
@@ -3419,6 +3509,14 @@ void CloseAcceptedMissionLog(void) {
     free(g_LoggedPlayfieldNames);
     g_LoggedPlayfieldNames = NULL;
     g_LoggedPlayfieldCount = g_LoggedPlayfieldCapacity = 0;
+
+    // Free session cache
+    for (int i = 0; i < g_LoggedMissionCount; i++) {
+        free(g_LoggedMissionKeys[i]);
+    }
+    free(g_LoggedMissionKeys);
+    g_LoggedMissionKeys = NULL;
+    g_LoggedMissionCount = g_LoggedMissionCapacity = 0;
 }
 
 void UpdateAcceptedCountersForMission( int mishIndex )

@@ -6,11 +6,12 @@
 #ifndef __CLICKSAVER_H__
 #define __CLICKSAVER_H__
 
-#define CS_VERSION "1.2WIP3"
+#define CS_VERSION "1.2WIP4"
 
 #include <windows.h>
 #include "mission.h"
 #include "sqlite3.h"
+#include <time.h>
 
 #ifdef __GNUC__
 #define PRINTF_ATTR(a,b) __attribute__((format(printf, a, b)))
@@ -18,8 +19,12 @@
 #define PRINTF_ATTR(a,b)
 #endif
 
+extern PUU8 g_bUpdatingCounters;
+
 void WriteLog( const char* Format, ... ) PRINTF_ATTR(1,2);
 void WriteDebug( const char* txt ) PRINTF_ATTR(1,2);
+void EndBuyingAgent(int keepWindow);
+void StartNewAcceptedMissionSession(void);
 
 #define AODB_TYP_ITEM       1000020
 #define AODB_TYP_ICON       1010008
@@ -141,6 +146,7 @@ enum
 enum
 {
     CSAM_QUIT = 1,
+	CSAM_NO_MISSION_RESPONSE = 5002,
     CSAM_SKIP,
     CSAM_OK,
     CSAM_CANCEL,
@@ -206,6 +212,6 @@ void* GetDataChunk( PUU32 _KeyHi, PUU32 _KeyLo, PUU32* _pSize );
 void DebugPacket( void* pData, unsigned int length );
 void WriteLog( const char* Format, ... );
 void WriteDebug( const char* txt );
-void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const char* findItem);
+void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const char* findItem, PUU32 mishId, const char* missionTitle);
 
 #endif
