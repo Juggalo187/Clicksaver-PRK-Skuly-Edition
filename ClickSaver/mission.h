@@ -38,7 +38,6 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #define CSA_MISSION_TITLE           CS_MISSIONCLASS_ATT + 1
 #define CSM_MISSION_PARSEMISSION    CS_MISSIONCLASS_MTD + 1
 
-// As of version 15.3.3 according to Jayde @ aodb.info, MAX(LENGTH(name)) is 104, adding some padding here...
 #define AODB_MAX_NAME_LEN 127
 
 extern PUU8 g_bOverrideMatch;
@@ -49,6 +48,7 @@ typedef struct
     PUU32   Value;
     PUU32   QL;
     PUU32   IconKey;
+	PUU32   NoDrop;
 } MissionItem;
 
 typedef struct

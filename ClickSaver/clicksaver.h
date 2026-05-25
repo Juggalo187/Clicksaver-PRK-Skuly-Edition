@@ -6,18 +6,32 @@
 #ifndef __CLICKSAVER_H__
 #define __CLICKSAVER_H__
 
-#define CS_VERSION "1.1"
+#define CS_VERSION "1.2WIP5"
 
 #include <windows.h>
 #include "mission.h"
 #include "sqlite3.h"
+#include <time.h>
 
-// AO Resource Type Constants
+#ifdef __GNUC__
+#define PRINTF_ATTR(a,b) __attribute__((format(printf, a, b)))
+#else
+#define PRINTF_ATTR(a,b)
+#endif
+
+extern PUU8 g_bUpdatingCounters;
+
+void WriteLog( const char* Format, ... ) PRINTF_ATTR(1,2);
+void WriteDebug( const char* txt ) PRINTF_ATTR(1,2);
+void EndBuyingAgent(int keepWindow);
+void StartNewAcceptedMissionSession(void);
+
 #define AODB_TYP_ITEM       1000020
 #define AODB_TYP_ICON       1010008
 #define AODB_TYP_PF         1000001
 
-// GUI object IDs
+#define CS_EXIT_FIRST 3000
+
 enum
 {
     CS_MAIN_WINDOW = 1,
@@ -102,6 +116,14 @@ enum
     CS_ITEM_ADD_BTN,
     CS_ITEM_EDIT_BTN,
 
+	CS_EXITS_TAB,
+	CS_EXITS_LISTVIEW,
+	CS_EXITS_LIST,
+	CS_EXITS_RADIUS_SLIDER,
+	CS_EXITS_RADIUS_BTN,
+	CS_ALERTEXIT_CB,
+	CS_HIGHLIGHTEXIT_CB,
+
     CS_WATCH_MSGBOX,
 
     CS_DBCOPYMSGBOX,
@@ -114,7 +136,6 @@ enum
     CS_BUYINGAGENT_PAUSEBTN,
     CS_BA_STATUS,
 
-    // Disabled items tab – use WM_USER + numbers to avoid conflicts
     CS_DISABLED_ITEMWATCH_TAB = 1100,
     CS_DISABLED_ITEMWATCH_LIST,
     CS_DISABLED_ITEMWATCH_LISTVIEW,
@@ -122,10 +143,10 @@ enum
     CS_ENABLE_BTN
 };
 
-// App messages
 enum
 {
     CSAM_QUIT = 1,
+	CSAM_NO_MISSION_RESPONSE = 5002,
     CSAM_SKIP,
     CSAM_OK,
     CSAM_CANCEL,
@@ -140,6 +161,8 @@ enum
 
     CSAM_SET_SLIDERS,
     CSAM_PAUSEBUYINGAGENT,
+	CSAM_IMPORT_LOCATIONS,
+    CSAM_EXPORT_LOCATIONS, 
     CSAM_UPDATE_DELAY,
 
     CSAM_BUYINGAGENT_TIMER,
@@ -147,6 +170,7 @@ enum
     CSAM_ITEM_EDIT_OK,
     CSAM_ITEM_ADD_OK,
     CSAM_ITEM_EDIT_CANCEL,
+	CSAM_UPDATE_EXIT_RADIUS,
 
     CSAM_DISABLE_ITEM,
     CSAM_ENABLE_ITEM,
@@ -158,8 +182,8 @@ enum
     CSAM_REMOVE_DUPLICATE_ITEMS
 };
 
-// External variables
 extern PULID g_ItemWatchList;
+extern int g_ExitProximityRadius;
 extern PULID g_LocWatchList;
 extern PULID g_TypeWatchList;
 extern pusObjectCollection* g_pCol;
@@ -168,21 +192,26 @@ extern PULID g_MainWin;
 extern PUU8 g_MishNumber, g_FoundMish;
 extern PUU8 g_bFullscreen;
 extern PUU32 g_GUIDef[];
+extern PUU8 g_bBuyingAgentActive;
+void safe_strcpy(char *dest, size_t dest_size, const char *src);
+void safe_strcat(char *dest, size_t dest_size, const char *src);
+int IsWatchlistEntryValid(const char *searchStr);
+int GetMatchingItems(const char *searchStr, const char ***outItems, int *outCount);
+int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, const char ***outItems, int *outCount);
+int CheckMissionNearExit(int zoneId, float x, float y);
 
-// Endianness macros
 #define EndianSwap16(x) ( ( x ) >> 8 | ( x ) << 8 )
 #define EndianSwap32(x) ( ( x ) << 24 | ( ( x ) & 0xff00 ) << 8 | ( ( x ) >> 8 ) & 0xff00 | ( x ) >> 24 )
 
-// PUL macros
 #define PUL_GET_CB(x) puGetAttribute( puGetObjectFromCollection( g_pCol, (x) ), PUA_CHECKBOX_CHECKED )
 #define PUL_SET_CB(x,y) puSetAttribute( puGetObjectFromCollection( g_pCol, (x) ), PUA_CHECKBOX_CHECKED, ( (y) ? 1 : 0) )
 
-// Database functions
 int OpenLocalDB();
 void ReleaseAODatabase();
 void* GetDataChunk( PUU32 _KeyHi, PUU32 _KeyLo, PUU32* _pSize );
 void DebugPacket( void* pData, unsigned int length );
 void WriteLog( const char* Format, ... );
 void WriteDebug( const char* txt );
+void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const char* findItem, PUU32 mishId, const char* missionTitle);
 
 #endif

@@ -622,24 +622,20 @@ void puListViewMouseEvent( PULID _Object, pusListViewClassData* _pData, PUU32 _P
 			break;
 
 		case PUMOUSE_LMB | PU_KEYDOUBLECLICK:
-			if( _pData->bShowSelected && !_pData->bEditable )
+			if (!_pData->bEditable)
 			{
-				PUU32 Index, Record;
-				Index = _pData->YScroll + ( pMouseEvent->MouseY - Rect.Y ) / _pData->EntryHeight;
-				Record = puDoMethod( _pData->Table, PUM_TABLE_GETRECORD, Index, 0 );
-
-				if( Record )
-					puSetAttribute( _Object, PUA_LISTVIEW_DOUBLECLICKED, TRUE );
+				// Not editable: post custom message to open the edit dialog
+				puPostAppMessage(5001, (PUU32)_Object);
 			}
-			else if( _pData->Table && _pData->bEditable && _pData->TextEntry )
+			else if (_pData->Table && _pData->bEditable && _pData->TextEntry)
 			{
-				_pData->SelectedRecordIndex = _pData->YScroll + ( pMouseEvent->MouseY - Rect.Y ) / _pData->EntryHeight;
-				_pData->SelectedRecord = puDoMethod( _pData->Table, PUM_TABLE_GETRECORD, _pData->SelectedRecordIndex, 0 );
-
-				puDoMethod( _Object, PUM_LISTVIEW_EDIT, 0, 0 );
+				// Editable: start inline editing (original behavior)
+				_pData->SelectedRecordIndex = _pData->YScroll + (pMouseEvent->MouseY - Rect.Y) / _pData->EntryHeight;
+				_pData->SelectedRecord = puDoMethod(_pData->Table, PUM_TABLE_GETRECORD, _pData->SelectedRecordIndex, 0);
+				puDoMethod(_Object, PUM_LISTVIEW_EDIT, 0, 0);
 			}
 			break;
-	}
+			}
 }
 
 void puListViewMakeVisible( PULID _Object, pusListViewClassData* _pData )
