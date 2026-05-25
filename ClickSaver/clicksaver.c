@@ -88,9 +88,6 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #define MATCH_AUTO_THRESHOLD 1
 
 static FILE* g_AcceptedLogFile = NULL;
-static int g_LoggedPlayfieldCount = 0;
-static char** g_LoggedPlayfieldNames = NULL;
-static int g_LoggedPlayfieldCapacity = 0;
 
 void ResetAcceptedMissionLog(void);
 void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const char* findItem, PUU32 mishId, const char* missionTitle);
@@ -160,6 +157,7 @@ static HBRUSH g_hButtonBgBrush = NULL;
 static char** g_LoggedMissionKeys = NULL;
 static int g_LoggedMissionCount = 0;
 static int g_LoggedMissionCapacity = 0;
+static char g_LastLoggedPlayfield[256] = "";
 
 static const char* const PROP_BUTTON_IDS = "ClickSaver_OwnerDrawButtons";
 
@@ -1772,6 +1770,13 @@ int main( int argc, char** argv )
     GetCurrentDirectory( MAX_PATH, g_CSDir );
 
     ImportSettings( "LastSettings.cs" );
+	
+	// Force "Item name optional" to be disabled on every startup
+    PULID itemOptionalCb = puGetObjectFromCollection( g_pCol, CS_ITEMOPTIONAL_CB );
+    if (itemOptionalCb) {
+        puSetAttribute( itemOptionalCb, PUA_CHECKBOX_CHECKED, FALSE );
+    }
+	
 	ResetAcceptedMissionLog();
 	
 	PULID delayCtrl = puGetObjectFromCollection(g_pCol, CS_BUYINGAGENTDELAY_ENTRY);
@@ -3384,19 +3389,11 @@ void ResetAcceptedMissionLog(void) {
         fclose(g_AcceptedLogFile);
         g_AcceptedLogFile = NULL;
     }
-    // Clear playfield tracking
-    for (int i = 0; i < g_LoggedPlayfieldCount; i++) {
-        free(g_LoggedPlayfieldNames[i]);
-    }
 	
 	free(g_LoggedMissionKeys);
     g_LoggedMissionKeys = NULL;
     g_LoggedMissionCount = 0;
     g_LoggedMissionCapacity = 0;
-	
-    free(g_LoggedPlayfieldNames);
-    g_LoggedPlayfieldNames = NULL;
-    g_LoggedPlayfieldCount = g_LoggedPlayfieldCapacity = 0;
 
     // Open log file in append mode (creates if needed)
     g_AcceptedLogFile = fopen("AcceptedMissions.txt", "a");
@@ -3413,21 +3410,16 @@ void ResetAcceptedMissionLog(void) {
     fflush(g_AcceptedLogFile);
 }
 
-void StartNewAcceptedMissionSession(void){
-    // If file isn't open yet (shouldn't happen after startup), fallback
+void StartNewAcceptedMissionSession(void)
+{
+	g_LastLoggedPlayfield[0] = '\0';
+	
     if (!g_AcceptedLogFile) {
-        ResetAcceptedMissionLog();  // open and write header
+        ResetAcceptedMissionLog();
         return;
     }
 
-    // Clear playfield cache
-    for (int i = 0; i < g_LoggedPlayfieldCount; i++)
-        free(g_LoggedPlayfieldNames[i]);
-    free(g_LoggedPlayfieldNames);
-    g_LoggedPlayfieldNames = NULL;
-    g_LoggedPlayfieldCount = g_LoggedPlayfieldCapacity = 0;
-
-    // Clear mission keys cache
+    // Clear mission keys cache only
     for (int i = 0; i < g_LoggedMissionCount; i++)
         free(g_LoggedMissionKeys[i]);
     free(g_LoggedMissionKeys);
@@ -3449,52 +3441,38 @@ void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const
     char pfName[256];
     GetPlayfieldName(zoneId, pfName, sizeof(pfName));
 
-    // Check if this playfield header has already been written in this session
-    int headerWritten = 0;
-    for (int i = 0; i < g_LoggedPlayfieldCount; i++) {
-        if (strcmp(g_LoggedPlayfieldNames[i], pfName) == 0) {
-            headerWritten = 1;
-            break;
-        }
-    }
-    if (!headerWritten) {
-        if (g_LoggedPlayfieldCount >= g_LoggedPlayfieldCapacity) {
-            g_LoggedPlayfieldCapacity = g_LoggedPlayfieldCapacity ? g_LoggedPlayfieldCapacity * 2 : 16;
-            g_LoggedPlayfieldNames = realloc(g_LoggedPlayfieldNames, g_LoggedPlayfieldCapacity * sizeof(char*));
-        }
-        g_LoggedPlayfieldNames[g_LoggedPlayfieldCount++] = _strdup(pfName);
+    // Write playfield header only when it changes
+    if (strcmp(pfName, g_LastLoggedPlayfield) != 0) {
         fprintf(g_AcceptedLogFile, "\n[%s]\n", pfName);
+        strcpy(g_LastLoggedPlayfield, pfName);
     }
 
     const char* missionType = MissionTypeIdToString(missionTypeId);
-     char missionDesc[512];
+    char missionDesc[512];
     if (missionTitle && missionTitle[0]) {
         snprintf(missionDesc, sizeof(missionDesc), "%s [%s]", missionType, missionTitle);
     } else {
         snprintf(missionDesc, sizeof(missionDesc), "%s", missionType);
     }
 
-    // Build a unique key including mission ID
+    // Build a unique key to avoid duplicate entries in the same session
     char key[512];
     snprintf(key, sizeof(key), "%u|%s|%s|%.1f|%.1f|%d", mishId, missionDesc, pfName, x, y, zoneId);
 
-    // Check session cache
+    // Session cache (prevents duplicates when the same mission is re‑parsed)
     for (int i = 0; i < g_LoggedMissionCount; i++) {
-        if (strcmp(key, g_LoggedMissionKeys[i]) == 0) {
-            return;  // already logged
-        }
+        if (strcmp(key, g_LoggedMissionKeys[i]) == 0)
+            return;
     }
 
-    // Add to cache
     if (g_LoggedMissionCount >= g_LoggedMissionCapacity) {
         g_LoggedMissionCapacity = g_LoggedMissionCapacity ? g_LoggedMissionCapacity * 2 : 16;
         g_LoggedMissionKeys = realloc(g_LoggedMissionKeys, g_LoggedMissionCapacity * sizeof(char*));
     }
     g_LoggedMissionKeys[g_LoggedMissionCount++] = _strdup(key);
 
-    // Write to file
-    fprintf(g_AcceptedLogFile, "%s - %s - /waypoint %.1f %.1f %d\n",
-            missionDesc, pfName, x, y, zoneId);
+    fprintf(g_AcceptedLogFile, "%s - /waypoint %.1f %.1f %d\n",
+            missionDesc, x, y, zoneId);
     fflush(g_AcceptedLogFile);
 }
 
@@ -3503,12 +3481,6 @@ void CloseAcceptedMissionLog(void) {
         fclose(g_AcceptedLogFile);
         g_AcceptedLogFile = NULL;
     }
-    for (int i = 0; i < g_LoggedPlayfieldCount; i++) {
-        free(g_LoggedPlayfieldNames[i]);
-    }
-    free(g_LoggedPlayfieldNames);
-    g_LoggedPlayfieldNames = NULL;
-    g_LoggedPlayfieldCount = g_LoggedPlayfieldCapacity = 0;
 
     // Free session cache
     for (int i = 0; i < g_LoggedMissionCount; i++) {
