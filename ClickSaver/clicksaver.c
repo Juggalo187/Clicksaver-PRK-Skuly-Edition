@@ -154,10 +154,6 @@ DWORD WINAPI HookManagerThread( void *pParam );
 static HBRUSH g_hDialogBgBrush = NULL;
 static HBRUSH g_hButtonBgBrush = NULL;
 
-static HANDLE g_hCacheLoadThread = NULL;
-static HANDLE g_hCacheReadyEvent = NULL;
-volatile int g_ItemCacheReady = 0;
-
 static char** g_LoggedMissionKeys = NULL;
 static int g_LoggedMissionCount = 0;
 static int g_LoggedMissionCapacity = 0;
@@ -212,7 +208,7 @@ static ExitLocation g_Exits[] = {
 	// Grid Exits (Omni)
 	{"Grid", "Clondyke", 670, 1054.2f, 4033.5f, 4},
 	{"Grid", "Galway", 685, 1419.8f, 1086.6f, 5},
-	{"Grid", "Lush Hills**w", 695, 1453.5f, 665.7f, 5},
+	{"Grid", "Lush Hills", 695, 1453.5f, 665.7f, 5},
 	{"Grid", "Omni Ent", 705, 582.0f, 330.0f, 5},
 	{"Grid", "Rome", 730, 258.1f, 317.9f, 5},
 	{"Grid", "2HO", 635, 668.1f, 1648.5f, 5},
@@ -749,6 +745,7 @@ INT_PTR CALLBACK MassAddDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPara
                             ptr++;
                             limit = atoi(ptr);
                             if (limit < 0) limit = 0;
+                            if (limit == 0) limit = 1;
                             while (*ptr && *ptr != ' ' && *ptr != '^') ptr++;
                         }
                         while (*ptr) {
@@ -1314,6 +1311,10 @@ static void ImportItemsFromFile(const char *filename, int replaceMode) {
 		ParseItemString(line, itemName, sizeof(itemName),
 						&disabled, &force, &limit, exclude, sizeof(exclude));
 		
+		if (limit == 0) {
+			limit = 1;
+		}
+		
 		char rawWithLimit[512];
 		BuildItemString(rawWithLimit, sizeof(rawWithLimit),
 						itemName, disabled, force, limit, exclude);
@@ -1465,12 +1466,12 @@ int OpenLocalDB()
         return FALSE;
     }
 	
-    /* if (sqlite3_exec(g_pSQLite, "PRAGMA quick_check;", NULL, NULL, NULL) != SQLITE_OK)
+    if (sqlite3_exec(g_pSQLite, "PRAGMA quick_check;", NULL, NULL, NULL) != SQLITE_OK)
     {
         sqlite3_close(g_pSQLite);
         g_pSQLite = NULL;
         return FALSE;
-    } */
+    }
 
     if (sqlite3_prepare_v2(g_pSQLite, "SELECT data FROM rdb_1000020 WHERE id = ?;", -1, &g_stmtItem, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(g_pSQLite, "SELECT data FROM rdb_1010008 WHERE id = ?;", -1, &g_stmtIcon, NULL) != SQLITE_OK ||
@@ -1730,46 +1731,6 @@ static void ImportLocations(const char *filename, int replaceMode)
     ShowModalMessage(NULL, msg, "Import Complete", MB_OK);
 }
 
-DWORD WINAPI LoadItemCacheThread(LPVOID lpParam) {
-    char cachePath[MAX_PATH];
-    sprintf(cachePath, "%s\\ItemNames.db", g_CSDir);
-
-    // Check if rebuild is needed (same logic as original)
-    int needRebuild = 0;
-    HANDLE hCache = CreateFileA(cachePath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-    if (hCache == INVALID_HANDLE_VALUE) {
-        needRebuild = 1;
-    } else {
-        char exePath[MAX_PATH];
-        GetModuleFileNameA(NULL, exePath, MAX_PATH);
-        HANDLE hExe = CreateFileA(exePath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-        if (hExe != INVALID_HANDLE_VALUE) {
-            FILETIME ftCache, ftExe;
-            GetFileTime(hCache, NULL, NULL, &ftCache);
-            GetFileTime(hExe, NULL, NULL, &ftExe);
-            if (CompareFileTime(&ftExe, &ftCache) > 0)
-                needRebuild = 1;
-            CloseHandle(hExe);
-        }
-        CloseHandle(hCache);
-    }
-
-    if (needRebuild) {
-        DeleteFileA(cachePath);
-        BuildItemNameCache(cachePath);
-    }
-    if (!LoadItemNameCache(cachePath)) {
-        BuildItemNameCache(cachePath);
-        LoadItemNameCache(cachePath);
-    }
-
-    g_ItemCacheReady = 1;
-    SetEvent(g_hCacheReadyEvent);
-    // Notify the main thread that cache is ready
-    puSendAppMessage(CSAM_CACHE_LOADED, 0);
-    return 0;
-}
-
 int main( int argc, char** argv )
 {
     pusAppMessage* pAppMsg;
@@ -1805,36 +1766,10 @@ int main( int argc, char** argv )
 	g_ItemWatchList = puGetObjectFromCollection( g_pCol, CS_ITEMWATCH_LIST );
 	g_DisabledItemWatchList = puGetObjectFromCollection( g_pCol, CS_DISABLED_ITEMWATCH_LIST );
 	g_LocWatchList = puGetObjectFromCollection( g_pCol, CS_LOCWATCH_LIST );
-	
-    puSetAttribute( g_MainWin, PUA_WINDOW_OPENED, TRUE );
 
     GetCurrentDirectory( MAX_PATH, g_CSDir );
 
-	// Get the listview objects (using the same IDs defined in guidef.c)
-	PULID itemListView = puGetObjectFromCollection(g_pCol, CS_ITEMWATCH_LISTVIEW);
-	PULID disabledListView = puGetObjectFromCollection(g_pCol, CS_DISABLED_ITEMWATCH_LISTVIEW);
-	PULID locListView = puGetObjectFromCollection(g_pCol, CS_LOCWATCH_LISTVIEW);
-	
-	// Temporarily hide them to prevent redraws during population
-	if (itemListView) puSetAttribute(itemListView, PUA_CONTROL_HIDDEN, TRUE);
-	if (disabledListView) puSetAttribute(disabledListView, PUA_CONTROL_HIDDEN, TRUE);
-	if (locListView) puSetAttribute(locListView, PUA_CONTROL_HIDDEN, TRUE);
-
     ImportSettings( "LastSettings.cs" );
-	
-	// Restore visibility and force a layout refresh
-	if (itemListView) {
-		puSetAttribute(itemListView, PUA_CONTROL_HIDDEN, FALSE);
-		puDoMethod(itemListView, PUM_CONTROL_RELAYOUT, 0, 0);
-	}
-	if (disabledListView) {
-		puSetAttribute(disabledListView, PUA_CONTROL_HIDDEN, FALSE);
-		puDoMethod(disabledListView, PUM_CONTROL_RELAYOUT, 0, 0);
-	}
-	if (locListView) {
-		puSetAttribute(locListView, PUA_CONTROL_HIDDEN, FALSE);
-		puDoMethod(locListView, PUM_CONTROL_RELAYOUT, 0, 0);
-	}
 	
 	// Force "Item name optional" to be disabled on every startup
     PULID itemOptionalCb = puGetObjectFromCollection( g_pCol, CS_ITEMOPTIONAL_CB );
@@ -1888,16 +1823,6 @@ int main( int argc, char** argv )
 		CleanUp();
 		return -1;
 	}
-	
-	// Create event and launch cache loader thread
-	g_hCacheReadyEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-	g_hCacheLoadThread = CreateThread(NULL, 0, LoadItemCacheThread, NULL, 0, NULL);
-	
-	// Show a status message while loading
-	PULID statusLabel = puGetObjectFromCollection(g_pCol, CS_BA_STATUS);
-	if (statusLabel) {
-		puSetAttribute(statusLabel, PUA_TEXT_STRING, (PUU32)"Loading item database...");
-	}
 
     if( ( g_Mutex = CreateMutex( NULL, FALSE, "ClickSaver" ) ) == INVALID_HANDLE_VALUE )
     {
@@ -1937,12 +1862,45 @@ int main( int argc, char** argv )
         CleanUp();
         return -1;
     }
+	
+char cachePath[MAX_PATH];
+sprintf(cachePath, "%s\\ItemNames.db", g_CSDir);
+
+int needRebuild = 0;
+HANDLE hCache = CreateFileA(cachePath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+if (hCache == INVALID_HANDLE_VALUE) {
+    needRebuild = 1;
+} else {
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(NULL, exePath, MAX_PATH);
+    HANDLE hExe = CreateFileA(exePath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (hExe != INVALID_HANDLE_VALUE) {
+        FILETIME ftCache, ftExe;
+        GetFileTime(hCache, NULL, NULL, &ftCache);
+        GetFileTime(hExe, NULL, NULL, &ftExe);
+        if (CompareFileTime(&ftExe, &ftCache) > 0)
+            needRebuild = 1;
+        CloseHandle(hExe);
+    }
+    CloseHandle(hCache);
+}
+
+if (needRebuild) {
+    DeleteFileA(cachePath);
+    BuildItemNameCache(cachePath);
+}
+if (!LoadItemNameCache(cachePath)) {
+    BuildItemNameCache(cachePath);
+    LoadItemNameCache(cachePath);
+}
 
     MissionControls[ 0 ] = puGetObjectFromCollection( g_pCol, CS_MISSION1 );
     MissionControls[ 1 ] = puGetObjectFromCollection( g_pCol, CS_MISSION2 );
     MissionControls[ 2 ] = puGetObjectFromCollection( g_pCol, CS_MISSION3 );
     MissionControls[ 3 ] = puGetObjectFromCollection( g_pCol, CS_MISSION4 );
     MissionControls[ 4 ] = puGetObjectFromCollection( g_pCol, CS_MISSION5 );
+	
+    puSetAttribute( g_MainWin, PUA_WINDOW_OPENED, TRUE );
 	
 	PULID radiusEntry = puGetObjectFromCollection(g_pCol, CS_EXITS_RADIUS_SLIDER);
 	if (radiusEntry) puSetAttribute(radiusEntry, PUA_TEXTENTRY_VALUE, g_ExitProximityRadius);
@@ -2504,25 +2462,10 @@ int main( int argc, char** argv )
                 puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENT_INFOWINDOW ), PUA_WINDOW_OPENED, TRUE );
                 break;
             }
-		
-		case CSAM_CACHE_LOADED:
-			{
-				PULID statusLabel = puGetObjectFromCollection(g_pCol, CS_BA_STATUS);
-				if (statusLabel) {
-					puSetAttribute(statusLabel, PUA_TEXT_STRING, (PUU32)"Ready");
-				}
-				// Optionally re‑enable any controls that were disabled
-				break;
-			}
 
         case CSAM_STARTBUYINGAGENT:
             puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENT_INFOWINDOW ), PUA_WINDOW_OPENED, FALSE );
 
-			if (!g_ItemCacheReady) {
-				DisplayErrorMessage("Item database still loading. Please wait a moment.", TRUE);
-				break;
-			}
-			
             if( !g_BuyingAgentCount )
             {
                 PUU32 bItemListOk = FALSE, bLocListOk = FALSE, bTypeListOk = FALSE;
@@ -2724,7 +2667,7 @@ void CleanUp()
     
     if( g_Thread != INVALID_HANDLE_VALUE )
     {
-        WaitForSingleObject(g_Thread, 30000);
+        WaitForSingleObject(g_Thread, 5000);
         CloseHandle(g_Thread);
     }
 
@@ -2741,12 +2684,6 @@ void CleanUp()
     if (g_hAbortEvent) {
         CloseHandle(g_hAbortEvent);
     }
-	
-	if (g_hCacheLoadThread) {
-		WaitForSingleObject(g_hCacheLoadThread, 30000);
-		CloseHandle(g_hCacheLoadThread);
-	}
-	if (g_hCacheReadyEvent) CloseHandle(g_hCacheReadyEvent);
 	
 	ReleaseAODatabase();
 	FreeDialogColors();
