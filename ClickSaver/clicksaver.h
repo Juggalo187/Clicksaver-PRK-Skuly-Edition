@@ -20,6 +20,7 @@
 #endif
 
 extern PUU8 g_bUpdatingCounters;
+extern volatile int g_ItemCacheReady;
 
 void WriteLog( const char* Format, ... ) PRINTF_ATTR(1,2);
 void WriteDebug( const char* txt ) PRINTF_ATTR(1,2);
@@ -200,6 +201,7 @@ int GetMatchingItems(const char *searchStr, const char ***outItems, int *outCoun
 int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, const char ***outItems, int *outCount);
 int CheckMissionNearExit(int zoneId, float x, float y);
 
+#define CSAM_CACHE_LOADED   (CSAM_REMOVE_DUPLICATE_ITEMS + 1)
 #define EndianSwap16(x) ( ( x ) >> 8 | ( x ) << 8 )
 #define EndianSwap32(x) ( ( x ) << 24 | ( ( x ) & 0xff00 ) << 8 | ( ( x ) >> 8 ) & 0xff00 | ( x ) >> 24 )
 

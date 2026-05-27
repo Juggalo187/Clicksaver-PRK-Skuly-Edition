@@ -958,6 +958,8 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     bAlertItem = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ALERTITEM_CB ), PUA_CHECKBOX_CHECKED );
     bAlertLoc = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ALERTLOC_CB ), PUA_CHECKBOX_CHECKED );
     bAlertType = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ALERTTYPE_CB ), PUA_CHECKBOX_CHECKED );
+	
+	PUU32 bItemOptional = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMOPTIONAL_CB ), PUA_CHECKBOX_CHECKED );
 
     if( !puGetAttribute( g_ItemWatchList, PUA_TABLE_NUMRECORDS ) ) bAlertItem = FALSE;
     if( !puGetAttribute( g_LocWatchList, PUA_TABLE_NUMRECORDS ) ) bAlertLoc = FALSE;
@@ -1145,29 +1147,35 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
 		}
 	}
 
-    if( g_bOverrideMatch ) {
-        bAccept = 1;
-    } else {
-        PUU32 bItemOptional = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMOPTIONAL_CB ), PUA_CHECKBOX_CHECKED );
-        PUU32 bNonItemActive = bAlertLoc || bAlertType || PUL_GET_CB(CS_ITEMVALUE_MSINGLE) || PUL_GET_CB(CS_ITEMVALUE_MTOTAL) || (bExitFound && PUL_GET_CB(CS_ALERTEXIT_CB));
-    
-        if( bItemOptional && bNonItemActive ) {
-            bAccept = 1;
-            if( bAlertLoc && !bLocFound ) bAccept = 0;
-            if( bAlertType && !bTypeFound ) bAccept = 0;
-            if( (PUL_GET_CB(CS_ITEMVALUE_MSINGLE) || PUL_GET_CB(CS_ITEMVALUE_MTOTAL)) && !bValueMatch ) bAccept = 0;
-            if( PUL_GET_CB(CS_ALERTEXIT_CB) && !bExitFound ) bAccept = 0;
-        } else {
-            bAccept = bAlertItem || bAlertLoc || bAlertType || (bExitFound && PUL_GET_CB(CS_ALERTEXIT_CB));
-            if( bAlertItem ) bAccept = bAccept && bItemNameMatch;
-            if( bAlertLoc )  bAccept = bAccept && bLocFound;
-            if( bAlertType ) bAccept = bAccept && bTypeFound;
-            if( PUL_GET_CB(CS_ITEMVALUE_MSINGLE) || PUL_GET_CB(CS_ITEMVALUE_MTOTAL) )
-                bAccept = bAccept && bValueMatch;
-            if( PUL_GET_CB(CS_ALERTEXIT_CB) )
-                bAccept = bAccept && bExitFound;
-        }
-    }
+    if (g_bOverrideMatch) {
+    bAccept = 1;
+	} else {
+		int bItemOptional = PUL_GET_CB(CS_ITEMOPTIONAL_CB);
+		int bExitEnabled  = PUL_GET_CB(CS_ALERTEXIT_CB);
+		int bValueEnabled = PUL_GET_CB(CS_ITEMVALUE_MSINGLE) || PUL_GET_CB(CS_ITEMVALUE_MTOTAL);
+	
+		// If no alerts are enabled, nothing to match
+		if (!bAlertItem && !bAlertLoc && !bAlertType && !bExitEnabled && !bValueEnabled) {
+			bAccept = 0;
+		} else {
+			bAccept = 1;  // assume accept, then reject if any required condition fails
+	
+			// Item match (skip if Item Optional mode is ON)
+			if (bAlertItem && !bItemNameMatch && !bItemOptional) bAccept = 0;
+	
+			// Location match
+			if (bAlertLoc && !bLocFound) bAccept = 0;
+	
+			// Mission type match (this kills kill missions when not wanted)
+			if (bAlertType && !bTypeFound) bAccept = 0;
+	
+			// Exit proximity match
+			if (bExitEnabled && !bExitFound) bAccept = 0;
+	
+			// Item value match
+			if (bValueEnabled && !bValueMatch) bAccept = 0;
+		}
+	}
     LogMissionDescription(TempVal, TempStr, pDesc, DescLength);
 
     if( bAccept ) {
@@ -1499,6 +1507,7 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
 
 PUU32 ItemMatch( PUU8* ItemName, PUU8* ItemSearch )
 {
+	if (!g_ItemCacheReady) return 0;
     PUU8 TmpString[ 256 ] = { 0 };
     PUU8* pChar;
     PUU8 c, OpenQuoteFlag, ExcludeFlag, HadValidString = FALSE;
@@ -1573,6 +1582,7 @@ PUU32 ItemMatch( PUU8* ItemName, PUU8* ItemSearch )
 
 int IsWatchlistEntryValid(const char *searchStr)
 {
+	if (!g_ItemCacheReady) return 0;
     if (!g_itemNames || !searchStr || !*searchStr) return 0;
 
     for (size_t i = 0; i < g_numItemNames; i++) {
@@ -1620,6 +1630,11 @@ int IsWatchlistEntryValid(const char *searchStr)
 
 int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, const char ***outItems, int *outCount)
 {
+	if (!g_ItemCacheReady) {
+		*outItems = NULL;
+		*outCount = 0;
+		return 0;
+	}
     *outItems = NULL;
     *outCount = 0;
     if (!g_itemNames || !baseName || !*baseName) return 0;
