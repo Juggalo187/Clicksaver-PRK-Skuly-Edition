@@ -1466,12 +1466,12 @@ int OpenLocalDB()
         return FALSE;
     }
 	
-    if (sqlite3_exec(g_pSQLite, "PRAGMA quick_check;", NULL, NULL, NULL) != SQLITE_OK)
+    /* if (sqlite3_exec(g_pSQLite, "PRAGMA quick_check;", NULL, NULL, NULL) != SQLITE_OK)
     {
         sqlite3_close(g_pSQLite);
         g_pSQLite = NULL;
         return FALSE;
-    }
+    } */
 
     if (sqlite3_prepare_v2(g_pSQLite, "SELECT data FROM rdb_1000020 WHERE id = ?;", -1, &g_stmtItem, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(g_pSQLite, "SELECT data FROM rdb_1010008 WHERE id = ?;", -1, &g_stmtIcon, NULL) != SQLITE_OK ||
@@ -1863,6 +1863,8 @@ int main( int argc, char** argv )
         return -1;
     }
 	
+	puSetAttribute( g_MainWin, PUA_WINDOW_OPENED, TRUE );
+	
 char cachePath[MAX_PATH];
 sprintf(cachePath, "%s\\ItemNames.db", g_CSDir);
 
@@ -1899,9 +1901,7 @@ if (!LoadItemNameCache(cachePath)) {
     MissionControls[ 2 ] = puGetObjectFromCollection( g_pCol, CS_MISSION3 );
     MissionControls[ 3 ] = puGetObjectFromCollection( g_pCol, CS_MISSION4 );
     MissionControls[ 4 ] = puGetObjectFromCollection( g_pCol, CS_MISSION5 );
-	
-    puSetAttribute( g_MainWin, PUA_WINDOW_OPENED, TRUE );
-	
+
 	PULID radiusEntry = puGetObjectFromCollection(g_pCol, CS_EXITS_RADIUS_SLIDER);
 	if (radiusEntry) puSetAttribute(radiusEntry, PUA_TEXTENTRY_VALUE, g_ExitProximityRadius);
 
