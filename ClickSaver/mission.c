@@ -1436,7 +1436,7 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
 						ic = FindItemCounter( cleanName );
 					}
 					if( ic ) {
-						if( g_bUpdatingCounters && should_count ) {
+						if( g_bUpdatingCounters ) {   // ← changed: removed && should_count
 							if (ic->accepted < ic->limit) {
 								ic->accepted++;
 							}

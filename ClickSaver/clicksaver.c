@@ -745,7 +745,6 @@ INT_PTR CALLBACK MassAddDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPara
                             ptr++;
                             limit = atoi(ptr);
                             if (limit < 0) limit = 0;
-                            if (limit == 0) limit = 1;
                             while (*ptr && *ptr != ' ' && *ptr != '^') ptr++;
                         }
                         while (*ptr) {
@@ -1311,10 +1310,6 @@ static void ImportItemsFromFile(const char *filename, int replaceMode) {
 		ParseItemString(line, itemName, sizeof(itemName),
 						&disabled, &force, &limit, exclude, sizeof(exclude));
 		
-		if (limit == 0) {
-			limit = 1;
-		}
-		
 		char rawWithLimit[512];
 		BuildItemString(rawWithLimit, sizeof(rawWithLimit),
 						itemName, disabled, force, limit, exclude);
@@ -1413,9 +1408,6 @@ void AddItemCounter(const char *name, int limit) {
 }
 
 static void ClearItemCounters() {
-    if (g_bBuyingAgentActive) {
-        return;
-    }
     if (g_BuyingAgentCount > 0 || g_BuyingAgentMissions > 0) {
         return;
     }
@@ -3328,6 +3320,7 @@ int BuyingAgent( int delay )
 void EndBuyingAgent(int keepWindow)
 {
     g_bPaused = 0;
+	g_bBuyingAgentActive = 0; 
     ClearItemCounters();
 
     if (!g_bFullscreen)
@@ -3493,7 +3486,6 @@ void CloseAcceptedMissionLog(void) {
 
 void UpdateAcceptedCountersForMission( int mishIndex )
 {
-    g_bUpdatingCounters = 1;
     PULID MissionControls[5] = {0};
     MissionControls[0] = puGetObjectFromCollection( g_pCol, CS_MISSION1 );
     MissionControls[1] = puGetObjectFromCollection( g_pCol, CS_MISSION2 );
@@ -3501,9 +3493,11 @@ void UpdateAcceptedCountersForMission( int mishIndex )
     MissionControls[3] = puGetObjectFromCollection( g_pCol, CS_MISSION4 );
     MissionControls[4] = puGetObjectFromCollection( g_pCol, CS_MISSION5 );
 
+    g_bUpdatingCounters = 0;               // initially off
     void *pData = g_CurrentPacket;
     for (int i = 0; i <= mishIndex; i++) {
         if (i == mishIndex) {
+            g_bUpdatingCounters = 1;       // turn on only for the accepted mission
             puDoMethod( MissionControls[i], CSM_MISSION_PARSEMISSION, (PUU32)pData, 0 );
             break;
         }
