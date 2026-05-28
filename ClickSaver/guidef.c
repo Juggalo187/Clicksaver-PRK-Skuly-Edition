@@ -230,9 +230,6 @@ PU_ACTION_OBJDEF, CS_ITEMWATCH_TAB, ( PUU32 )"VerGroup", 0,
             PUM_ADDCHILD, PU_CHECKBOX( CS_ALERTITEM_CB, "Match in Buying Agent  /  " ),
             PUM_ADDCHILD, PU_SET_CHECKBOX( CS_HIGHLIGHTITEM_CB, "Highlight Matches" ),
         PU_ENDGROUP,
-        PUM_ADDCHILD, PU_HORGROUP,
-            PUM_ADDCHILD, PU_CHECKBOX( CS_ITEMOPTIONAL_CB, "Item name optional" ),
-        PU_ENDGROUP,
     PU_ENDGROUP,
 // ****
 

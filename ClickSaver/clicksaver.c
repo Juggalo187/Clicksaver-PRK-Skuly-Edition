@@ -1763,12 +1763,6 @@ int main( int argc, char** argv )
 
     ImportSettings( "LastSettings.cs" );
 	
-	// Force "Item name optional" to be disabled on every startup
-    PULID itemOptionalCb = puGetObjectFromCollection( g_pCol, CS_ITEMOPTIONAL_CB );
-    if (itemOptionalCb) {
-        puSetAttribute( itemOptionalCb, PUA_CHECKBOX_CHECKED, FALSE );
-    }
-	
 	ResetAcceptedMissionLog();
 	
 	PULID delayCtrl = puGetObjectFromCollection(g_pCol, CS_BUYINGAGENTDELAY_ENTRY);
@@ -2719,7 +2713,6 @@ enum
 
     CFG_BUYMOD,
     CFG_BUYINGAGENTDELAY,
-    CFG_ITEMOPTIONAL,
 	CFG_BAWINDOWX,
     CFG_BAWINDOWY,
 };
@@ -2763,7 +2756,6 @@ struct
 
     { CFG_BUYMOD, "BUYMOD" },
     { CFG_BUYINGAGENTDELAY, "BUYINGAGENTDELAY" },
-    { CFG_ITEMOPTIONAL, "ITEMOPTIONAL" },
 	{ CFG_BAWINDOWX, "BAWINDOWX" },
     { CFG_BAWINDOWY, "BAWINDOWY" },
     { 0, NULL }
@@ -2881,10 +2873,6 @@ void ImportSettings( char* filename )
                 case CFG_WATCHMSGBOX:
                     sscanf( Value, "%u", &Val );
                     puSetAttribute( puGetObjectFromCollection( g_pCol, CS_MSGBOX_CB ), PUA_CHECKBOX_CHECKED, Val ? TRUE : FALSE );
-                    break;
-                case CFG_ITEMOPTIONAL:
-                    sscanf( Value, "%u", &Val );
-                    puSetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMOPTIONAL_CB ), PUA_CHECKBOX_CHECKED, Val ? TRUE : FALSE );
                     break;
                 case CFG_BUYINGAGENTSHOWHELP:
                     sscanf( Value, "%u", &Val );
@@ -3093,7 +3081,6 @@ void ExportSettings( char* filename )
     fprintf( fp, "WATCHMSGBOX::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_MSGBOX_CB ), PUA_CHECKBOX_CHECKED ) );
     fprintf( fp, "BUYINGAGENTSHOWHELP::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_BAINFO_CB ), PUA_CHECKBOX_CHECKED ) );
     fprintf( fp, "SOUNDS::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_SOUNDS_CB ), PUA_CHECKBOX_CHECKED ) );
-    fprintf( fp, "ITEMOPTIONAL::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMOPTIONAL_CB ), PUA_CHECKBOX_CHECKED ) );
     fprintf( fp, "EXPAND::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_EXPAND_CB ), PUA_CHECKBOX_CHECKED ) );
     fprintf( fp, "MOUSEMOVE::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_MOUSEMOVE_CB ), PUA_CHECKBOX_CHECKED ) );
     fprintf( fp, "LOG::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_LOG_CB ), PUA_CHECKBOX_CHECKED ) );

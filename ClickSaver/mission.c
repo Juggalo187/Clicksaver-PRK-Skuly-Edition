@@ -933,7 +933,7 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     float CoordX = { 0 }, CoordY = { 0 };
     PUU32 TempVal, MishPF;
     PUU32 Cash, XP, MishQL, MishID, TotalValue;
-    PUU32 bAlertItem, bAlertLoc, bAlertType;
+    PUU32 bAlertItem, bAlertLoc, bAlertType, bAlertExit;
     PUU32 bItemNameMatch = FALSE;
     PUU32 bValueMatch = FALSE;
     PUU32 bLocFound = FALSE, bTypeFound = FALSE;
@@ -958,6 +958,7 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     bAlertItem = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ALERTITEM_CB ), PUA_CHECKBOX_CHECKED );
     bAlertLoc = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ALERTLOC_CB ), PUA_CHECKBOX_CHECKED );
     bAlertType = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ALERTTYPE_CB ), PUA_CHECKBOX_CHECKED );
+	bAlertExit = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ALERTEXIT_CB ), PUA_CHECKBOX_CHECKED );
 
     if( !puGetAttribute( g_ItemWatchList, PUA_TABLE_NUMRECORDS ) ) bAlertItem = FALSE;
     if( !puGetAttribute( g_LocWatchList, PUA_TABLE_NUMRECORDS ) ) bAlertLoc = FALSE;
@@ -1146,28 +1147,16 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
 	}
 
     if( g_bOverrideMatch ) {
-        bAccept = 1;
-    } else {
-        PUU32 bItemOptional = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMOPTIONAL_CB ), PUA_CHECKBOX_CHECKED );
-        PUU32 bNonItemActive = bAlertLoc || bAlertType || PUL_GET_CB(CS_ITEMVALUE_MSINGLE) || PUL_GET_CB(CS_ITEMVALUE_MTOTAL) || (bExitFound && PUL_GET_CB(CS_ALERTEXIT_CB));
-    
-        if( bItemOptional && bNonItemActive ) {
-            bAccept = 1;
-            if( bAlertLoc && !bLocFound ) bAccept = 0;
-            if( bAlertType && !bTypeFound ) bAccept = 0;
-            if( (PUL_GET_CB(CS_ITEMVALUE_MSINGLE) || PUL_GET_CB(CS_ITEMVALUE_MTOTAL)) && !bValueMatch ) bAccept = 0;
-            if( PUL_GET_CB(CS_ALERTEXIT_CB) && !bExitFound ) bAccept = 0;
-        } else {
-            bAccept = bAlertItem || bAlertLoc || bAlertType || (bExitFound && PUL_GET_CB(CS_ALERTEXIT_CB));
-            if( bAlertItem ) bAccept = bAccept && bItemNameMatch;
-            if( bAlertLoc )  bAccept = bAccept && bLocFound;
-            if( bAlertType ) bAccept = bAccept && bTypeFound;
-            if( PUL_GET_CB(CS_ITEMVALUE_MSINGLE) || PUL_GET_CB(CS_ITEMVALUE_MTOTAL) )
-                bAccept = bAccept && bValueMatch;
-            if( PUL_GET_CB(CS_ALERTEXIT_CB) )
-                bAccept = bAccept && bExitFound;
-        }
-    }
+			bAccept = 1;
+		} else {
+			bAccept = bAlertItem || bAlertLoc || bAlertType || (bExitFound && bAlertExit);
+			if( bAlertItem ) bAccept = bAccept && bItemNameMatch;
+			if( bAlertLoc )  bAccept = bAccept && bLocFound;
+			if( bAlertType ) bAccept = bAccept && bTypeFound;
+			if( PUL_GET_CB(CS_ITEMVALUE_MSINGLE) || PUL_GET_CB(CS_ITEMVALUE_MTOTAL) )
+				bAccept = bAccept && bValueMatch;
+			if( bAlertExit ) bAccept = bAccept && bExitFound;
+		}
     LogMissionDescription(TempVal, TempStr, pDesc, DescLength);
 
     if( bAccept ) {
