@@ -96,6 +96,7 @@ enum
     CS_HIGHLIGHTITEM_CB,
     CS_HIGHLIGHTLOC_CB,
     CS_HIGHLIGHTTYPE_CB,
+	CS_STRICT_FINDITEM_CB,
 
     CS_BUYINGAGENTFOLD,
     CS_BUYINGAGENTTRIES,
@@ -198,6 +199,7 @@ int IsWatchlistEntryValid(const char *searchStr);
 int GetMatchingItems(const char *searchStr, const char ***outItems, int *outCount);
 int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, const char ***outItems, int *outCount);
 int CheckMissionNearExit(int zoneId, float x, float y);
+int GetActiveWatchlistCount(void);
 
 #define EndianSwap16(x) ( ( x ) >> 8 | ( x ) << 8 )
 #define EndianSwap32(x) ( ( x ) << 24 | ( ( x ) & 0xff00 ) << 8 | ( ( x ) >> 8 ) & 0xff00 | ( x ) >> 24 )

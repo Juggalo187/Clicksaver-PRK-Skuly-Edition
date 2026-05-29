@@ -169,6 +169,22 @@ typedef struct {
     int group;
 } ExitLocation;
 
+int GetActiveWatchlistCount(void)
+{
+    int count = 0;
+    PUU32 record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+    while (record) {
+        PUU8 *display = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
+        if (display && *display) {
+            if (strstr((char*)display, "[disabled]") == NULL) {
+                count++;
+            }
+        }
+        record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
+    }
+    return count;
+}
+
 static ExitLocation g_Exits[] = {
     // Whompahs (Neutral)
     {"Whompah", "Newland City", 566, 384.6f, 303.5f, 1},
@@ -2443,17 +2459,45 @@ if (!LoadItemNameCache(cachePath)) {
             break;
 
         case CSAM_PRESTARTBUYINGAGENT:
-            if( puGetAttribute( puGetObjectFromCollection( g_pCol, CS_BAINFO_CB ), PUA_CHECKBOX_CHECKED ) )
-            {
-                puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENT_INFOWINDOW ), PUA_WINDOW_OPENED, TRUE );
-                break;
-            }
+			{
+				if( puGetAttribute( puGetObjectFromCollection( g_pCol, CS_STRICT_FINDITEM_CB ), PUA_CHECKBOX_CHECKED ) )
+				{
+					int activeCount = GetActiveWatchlistCount();
+					if( activeCount <= 1 )
+					{
+						char msg[256];
+						sprintf(msg, "Strict Find Item mode requires at least 2 active items in the watchlist.\n"
+									"Current active items: %d.\nBuying agent will not start.", activeCount);
+						DisplayErrorMessage(msg, TRUE);
+						break;
+					}
+				}
+				
+				if( puGetAttribute( puGetObjectFromCollection( g_pCol, CS_BAINFO_CB ), PUA_CHECKBOX_CHECKED ) )
+				{
+					puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENT_INFOWINDOW ), PUA_WINDOW_OPENED, TRUE );
+					break; 
+				}
+			}
 
         case CSAM_STARTBUYINGAGENT:
             puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENT_INFOWINDOW ), PUA_WINDOW_OPENED, FALSE );
 
             if( !g_BuyingAgentCount )
             {
+			if( puGetAttribute( puGetObjectFromCollection( g_pCol, CS_STRICT_FINDITEM_CB ), PUA_CHECKBOX_CHECKED ) )
+				{
+					int activeCount = GetActiveWatchlistCount();
+					if( activeCount <= 1 )
+					{
+						char msg[256];
+						sprintf(msg, "Strict Find Item mode requires at least 2 active items in the watchlist.\n"
+									"Current active items: %d.\nBuying agent will not start.", activeCount);
+						DisplayErrorMessage(msg, TRUE);
+						break;
+					}
+				}
+				
                 PUU32 bItemListOk = FALSE, bLocListOk = FALSE, bTypeListOk = FALSE;
                 PUU32 bWarnItem, bWarnLoc, bWarnType;
                 PUU32 bReadyToGo = FALSE;

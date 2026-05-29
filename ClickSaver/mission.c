@@ -67,6 +67,7 @@ static const char* g_common_items[] = {
     "Radioactive Isotope Container",
     "Virus Container",
     "Weird-Looking Bomb",
+	"Nanobot Container",
     "Urgent Sensitive Information",
     "Art Container",
     "Philip Ross Painting",
@@ -1149,6 +1150,7 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     if( g_bOverrideMatch ) {
 			bAccept = 1;
 		} else {
+			// Normal AND logic (unchanged)
 			bAccept = bAlertItem || bAlertLoc || bAlertType || (bExitFound && bAlertExit);
 			if( bAlertItem ) bAccept = bAccept && bItemNameMatch;
 			if( bAlertLoc )  bAccept = bAccept && bLocFound;
@@ -1156,6 +1158,22 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
 			if( PUL_GET_CB(CS_ITEMVALUE_MSINGLE) || PUL_GET_CB(CS_ITEMVALUE_MTOTAL) )
 				bAccept = bAccept && bValueMatch;
 			if( bAlertExit ) bAccept = bAccept && bExitFound;
+			
+			// Strict Find Item Mode
+			if( puGetAttribute( puGetObjectFromCollection( g_pCol, CS_STRICT_FINDITEM_CB ), PUA_CHECKBOX_CHECKED ) )
+			{
+				int bStrictFindItemOK = 0;
+				// Must be a Find Item mission (0x2c49)
+				if( TempVal == 0x2c49 )
+				{
+					// Both reward and find item must match the watchlist
+					if( bItemNameMatch && bFindItemMatch )
+						bStrictFindItemOK = 1;
+				}
+				// Reject if strict conditions not met
+				if( !bStrictFindItemOK )
+					bAccept = 0;
+			}
 		}
     LogMissionDescription(TempVal, TempStr, pDesc, DescLength);
 
