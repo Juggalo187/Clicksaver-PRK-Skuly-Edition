@@ -211,6 +211,9 @@ void* GetDataChunk( PUU32 _KeyHi, PUU32 _KeyLo, PUU32* _pSize );
 void DebugPacket( void* pData, unsigned int length );
 void WriteLog( const char* Format, ... );
 void WriteDebug( const char* txt );
-void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const char* findItem, PUU32 mishId, const char* missionTitle);
+const char* GetMatchedExitName(int zoneId, float x, float y);
+void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId,
+                        const char* findItem, PUU32 mishId, const char* missionTitle,
+                        const char* matchedLocation, const char* matchedExit);
 
 #endif

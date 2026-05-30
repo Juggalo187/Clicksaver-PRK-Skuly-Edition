@@ -90,7 +90,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 static FILE* g_AcceptedLogFile = NULL;
 
 void ResetAcceptedMissionLog(void);
-void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const char* findItem, PUU32 mishId, const char* missionTitle);
+void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId,
+                        const char* findItem, PUU32 mishId, const char* missionTitle,
+                        const char* matchedLocation, const char* matchedExit);
 void CloseAcceptedMissionLog(void);
 
 sqlite3*      g_pSQLite = NULL;
@@ -157,7 +159,10 @@ static HBRUSH g_hButtonBgBrush = NULL;
 static char** g_LoggedMissionKeys = NULL;
 static int g_LoggedMissionCount = 0;
 static int g_LoggedMissionCapacity = 0;
-static char g_LastLoggedPlayfield[256] = "";
+
+static char** g_PrintedHeaders = NULL;
+static int g_PrintedHeaderCount = 0;
+static int g_PrintedHeaderCapacity = 0;
 
 static const char* const PROP_BUTTON_IDS = "ClickSaver_OwnerDrawButtons";
 
@@ -224,6 +229,24 @@ static ExitLocation g_Exits[] = {
 
 static int g_NumExits = sizeof(g_Exits) / sizeof(g_Exits[0]);
 int g_ExitProximityRadius = 200;
+
+const char* GetMatchedExitName(int zoneId, float x, float y)
+{
+    static char buffer[256];
+    for (int i = 0; i < g_NumExits; i++) {
+        PULID chk = puGetObjectFromCollection(g_pCol, CS_EXIT_FIRST + i);
+        if (chk && puGetAttribute(chk, PUA_CHECKBOX_CHECKED) &&
+            g_Exits[i].zoneId == zoneId) {
+            float dx = g_Exits[i].x - x;
+            float dy = g_Exits[i].y - y;
+            if (sqrtf(dx*dx + dy*dy) <= (float)g_ExitProximityRadius) {
+                snprintf(buffer, sizeof(buffer), "%s: %s", g_Exits[i].type, g_Exits[i].name);
+                return buffer;
+            }
+        }
+    }
+    return NULL;
+}
 
 static int IsMissionNearCheckedExit(int zoneId, float mx, float my, int radius)
 {
@@ -3365,6 +3388,13 @@ static void GetPlayfieldName(int zoneId, char* buf, size_t bufSize) {
 }
 
 void ResetAcceptedMissionLog(void) {
+	
+    for (int i = 0; i < g_PrintedHeaderCount; i++)
+        free(g_PrintedHeaders[i]);
+    free(g_PrintedHeaders);
+    g_PrintedHeaders = NULL;
+    g_PrintedHeaderCount = g_PrintedHeaderCapacity = 0;
+	
     if (g_AcceptedLogFile) {
         fclose(g_AcceptedLogFile);
         g_AcceptedLogFile = NULL;
@@ -3392,7 +3422,11 @@ void ResetAcceptedMissionLog(void) {
 
 void StartNewAcceptedMissionSession(void)
 {
-	g_LastLoggedPlayfield[0] = '\0';
+    for (int i = 0; i < g_PrintedHeaderCount; i++)
+        free(g_PrintedHeaders[i]);
+    free(g_PrintedHeaders);
+    g_PrintedHeaders = NULL;
+    g_PrintedHeaderCount = g_PrintedHeaderCapacity = 0;
 	
     if (!g_AcceptedLogFile) {
         ResetAcceptedMissionLog();
@@ -3415,16 +3449,57 @@ void StartNewAcceptedMissionSession(void)
     fflush(g_AcceptedLogFile);
 }
 
-void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const char* findItem, PUU32 mishId, const char* missionTitle){
+void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId,
+                        const char* findItem, PUU32 mishId, const char* missionTitle,
+                        const char* matchedLocation, const char* matchedExit)
+{
     if (!g_AcceptedLogFile) return;
 
     char pfName[256];
-    GetPlayfieldName(zoneId, pfName, sizeof(pfName));
+    const char* displayName = NULL;
 
-    // Write playfield header only when it changes
-    if (strcmp(pfName, g_LastLoggedPlayfield) != 0) {
-        fprintf(g_AcceptedLogFile, "\n[%s]\n", pfName);
-        strcpy(g_LastLoggedPlayfield, pfName);
+    if (matchedExit) {
+        displayName = matchedExit;
+    } else if (matchedLocation) {
+        // Strip coordinates: copy everything before the first '('
+        static char locName[256];
+        const char* paren = strchr(matchedLocation, '(');
+        if (paren) {
+            size_t len = paren - matchedLocation;
+            while (len > 0 && matchedLocation[len-1] == ' ') len--;
+            if (len > 0 && len < sizeof(locName)) {
+                memcpy(locName, matchedLocation, len);
+                locName[len] = '\0';
+                displayName = locName;
+            } else {
+                displayName = matchedLocation;
+            }
+        } else {
+            displayName = matchedLocation;
+        }
+    } else {
+        GetPlayfieldName(zoneId, pfName, sizeof(pfName));
+        displayName = pfName;
+    }
+
+    // Check if this displayName already has a header in this session
+    int alreadyPrinted = 0;
+    for (int i = 0; i < g_PrintedHeaderCount; i++) {
+        if (strcmp(displayName, g_PrintedHeaders[i]) == 0) {
+            alreadyPrinted = 1;
+            break;
+        }
+    }
+
+    // Write header only if it hasn't appeared before in this session
+    if (!alreadyPrinted) {
+        fprintf(g_AcceptedLogFile, "\n[%s]\n", displayName);
+        // Remember that we've printed this header
+        if (g_PrintedHeaderCount >= g_PrintedHeaderCapacity) {
+            g_PrintedHeaderCapacity = g_PrintedHeaderCapacity ? g_PrintedHeaderCapacity * 2 : 16;
+            g_PrintedHeaders = realloc(g_PrintedHeaders, g_PrintedHeaderCapacity * sizeof(char*));
+        }
+        g_PrintedHeaders[g_PrintedHeaderCount++] = _strdup(displayName);
     }
 
     const char* missionType = MissionTypeIdToString(missionTypeId);
@@ -3437,9 +3512,8 @@ void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const
 
     // Build a unique key to avoid duplicate entries in the same session
     char key[512];
-    snprintf(key, sizeof(key), "%u|%s|%s|%.1f|%.1f|%d", mishId, missionDesc, pfName, x, y, zoneId);
+    snprintf(key, sizeof(key), "%u|%s|%s|%.1f|%.1f|%d", mishId, missionDesc, displayName, x, y, zoneId);
 
-    // Session cache (prevents duplicates when the same mission is re‑parsed)
     for (int i = 0; i < g_LoggedMissionCount; i++) {
         if (strcmp(key, g_LoggedMissionKeys[i]) == 0)
             return;
@@ -3469,6 +3543,12 @@ void CloseAcceptedMissionLog(void) {
     free(g_LoggedMissionKeys);
     g_LoggedMissionKeys = NULL;
     g_LoggedMissionCount = g_LoggedMissionCapacity = 0;
+	
+	for (int i = 0; i < g_PrintedHeaderCount; i++)
+        free(g_PrintedHeaders[i]);
+    free(g_PrintedHeaders);
+    g_PrintedHeaders = NULL;
+    g_PrintedHeaderCount = g_PrintedHeaderCapacity = 0;
 }
 
 void UpdateAcceptedCountersForMission( int mishIndex )

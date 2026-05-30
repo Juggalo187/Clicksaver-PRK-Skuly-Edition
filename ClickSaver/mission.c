@@ -49,7 +49,7 @@ static PUU8 g_bIsFindItem = 0;
 static PUU8 g_bIsReturnMission = 0;
 static PUU32 g_bRewardMatched = 0;
 extern PULID g_DisabledItemWatchList;
-extern void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId, const char* findItem, PUU32 mishId, const char* missionTitle);
+extern const char* GetMatchedExitName(int zoneId, float x, float y);
 extern sqlite3* g_pSQLite;
 
 
@@ -465,7 +465,7 @@ void FreeItemNameCache(void) {
     g_itemIndexSize = 0;
 }
 
-static int IsRealItemNameCI(const char *name) {
+int IsRealItemNameCI(const char *name) {
     if (!g_itemNames || !name) return 0;
     char lowerName[256] = { 0 };
     size_t i;
@@ -492,46 +492,56 @@ static int IsRealItemName(const char *name) {
                    (int(*)(const void*, const void*))strcmp) != NULL;
 }
 
-static void LogMissionDescription(PUU32 missionType, const char *findItem,
-                                  const PUU8* pDesc, PUU32 descLen)
-{
+void LogMissionDescription(PUU32 missionType, const char *findItem,
+                           const PUU8* pDesc, PUU32 descLen,
+                           const char *missionTitle, PUU32 mishId){
+    // Only log for Find Item or Return Item missions
     if (!(missionType == 0x2c49 || missionType == 0x26add))
         return;
 
-    const char* findStr = (findItem && findItem[0]) ? findItem : "(none)";
-    int wordCount = WordCount(findStr);
-
-    int shouldLog = 0;
-    char descSnippet[256] = {0};
-
-    if (strcmp(findStr, "(none)") == 0) {
-        shouldLog = 1;
-        if (pDesc && descLen > 0) {
-            size_t snippetLen = (descLen < 200) ? descLen : 200;
-            strncpy(descSnippet, (const char*)pDesc, snippetLen);
-            descSnippet[snippetLen] = '\0';
-            for (char *c = descSnippet; *c; c++) {
-                if (*c == '\n' || *c == '\r') *c = ' ';
-            }
-        }
-    } else if (wordCount <= 2) {
-        if (!IsCommonItem(findStr) && !IsRealItemNameCI(findStr))
-            shouldLog = 1;
+    // Determine if this is a failure or suspicious case
+    int hasItem = (findItem && findItem[0] != '\0');
+    int suspicious = 0;
+    if (hasItem) {
+        int wordCount = WordCount(findItem);
+        if (wordCount <= 2 && !IsCommonItem(findItem) && !IsRealItemNameCI(findItem))
+            suspicious = 1;
     }
 
-    if (!shouldLog) return;
+    // Log only failures (empty item) or suspicious short items
+    if (hasItem && !suspicious)
+        return;
 
+    // Open log file in append mode
     FILE* f = fopen("SkulyDebug.log", "a");
     if (!f) return;
 
-    const char* typeStr = MissionTypeToString(missionType);
-    
-    if (strcmp(findStr, "(none)") == 0 && descSnippet[0]) {
-        fprintf(f, "Type=%s, FindItem=\"(none)\", Desc=\"%s\"\n", typeStr, descSnippet);
-    } else {
-        fprintf(f, "Type=%s, FindItem=\"%s\"\n", typeStr, findStr);
+    time_t now = time(NULL);
+    struct tm* tm_info = localtime(&now);
+    char timeBuf[20];
+    strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", tm_info);
+
+    const char* typeStr = "Unknown";
+    switch (missionType) {
+        case 0x2c4e:  typeStr = "Repair"; break;
+        case 0x26add: typeStr = "Return Item"; break;
+        case 0x2c47:  typeStr = "Find Person"; break;
+        case 0x2c49:  typeStr = "Find Item"; break;
+        case 0x2c42:  typeStr = "Kill Person"; break;
     }
-    
+
+    fprintf(f, "\n=== %s ===\n", timeBuf);
+    fprintf(f, "Mission ID: %u\n", mishId);
+    fprintf(f, "Title: %s\n", missionTitle ? missionTitle : "(none)");
+    fprintf(f, "Type: %s (0x%X)\n", typeStr, missionType);
+    fprintf(f, "Extracted findItem: \"%s\"\n", hasItem ? findItem : "(empty)");
+    if (!hasItem) {
+        fprintf(f, "FAILED TO EXTRACT ANY ITEM NAME.\n");
+        fprintf(f, "Full mission description (%u bytes):\n%.*s\n", descLen, descLen, (const char*)pDesc);
+    } else if (suspicious) {
+        fprintf(f, "SUSPICIOUS SHORT ITEM NAME (not in DB, not common).\n");
+        fprintf(f, "Full mission description (%u bytes):\n%.*s\n", descLen, descLen, (const char*)pDesc);
+    }
     fclose(f);
 }
 
@@ -550,7 +560,7 @@ extern PUU8 g_MishNumber;
 PUU32 MissionSetAttr( PULID _Object, PULID _Class, void* _pData, PUU32 _Attr, PUU32 _Val );
 PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData );
 PUU32 ShowItem( MissionClassData* _pData, Item* _pItem, PUU32 _ObjId, PUU32 _ValId );
-PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List );
+PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List, PUU8** ppMatch );
 PUU32 SetAndSearchType( PUU32 TempVal, PULID _TextEntry );
 PUU32 ItemMatch( PUU8* ItemName, PUU8* ItemSearch );
 PUU32 LocationMatch( PUU8* LocationName, PUU8* LocationSearch );
@@ -1054,8 +1064,14 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     snprintf(TempStr, sizeof(TempStr), "%s (%.1f, %.1f)", PFName, CoordX, CoordY);
     
     bExitFound = CheckMissionNearExit(MishPF, CoordX, CoordY);
-    bLocFound = SetAndSearch( TempStr, puGetObjectFromCollection( _pData->pCol, LOCATION ), g_LocWatchList );
+    char* matchedLoc = NULL;
+	bLocFound = SetAndSearch( TempStr, puGetObjectFromCollection( _pData->pCol, LOCATION ), g_LocWatchList, &matchedLoc );
     
+	const char* matchedExit = NULL;
+	if (bExitFound) {
+		matchedExit = GetMatchedExitName(MishPF, CoordX, CoordY);
+	}
+	
     if (bExitFound && puGetAttribute(puGetObjectFromCollection(g_pCol, CS_HIGHLIGHTEXIT_CB), PUA_CHECKBOX_CHECKED)) {
         puSetAttribute(puGetObjectFromCollection(_pData->pCol, LOCATION), PUA_TEXTENTRY_HILIGHT, TRUE);
     }
@@ -1102,7 +1118,7 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
             g_bIsFindItem = 1;
             g_bIsReturnMission = (TempVal == 0x26add);
             g_bRewardMatched = (PUU8)bRewardMatched;
-            int found = SetAndSearch(TempStr, puGetObjectFromCollection(_pData->pCol, FINDITEM), g_ItemWatchList);
+            int found = SetAndSearch( TempStr, puGetObjectFromCollection(_pData->pCol, FINDITEM), g_ItemWatchList, NULL );
             g_bIsFindItem = 0;
             if (found) {
                 bItemNameMatch = TRUE;
@@ -1157,7 +1173,7 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
 				bAccept = bAccept && bValueMatch;
 			if( bAlertExit ) bAccept = bAccept && bExitFound;
 		}
-    LogMissionDescription(TempVal, TempStr, pDesc, DescLength);
+    LogMissionDescription(TempVal, TempStr, pDesc, DescLength, missionTitle, MishID);
 
     if( bAccept ) {
 		int wasFirst = (g_FoundMish == 255);
@@ -1165,7 +1181,8 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
 		
 		// Only log if this is the first accepted mission in this packet
 		if( wasFirst ) {
-			LogAcceptedMission(MishPF, CoordX, CoordY, TempVal, TempStr, MishID, missionTitle);
+			LogAcceptedMission(MishPF, CoordX, CoordY, TempVal, TempStr, MishID, missionTitle,
+                           matchedLoc, matchedExit);
 		}
 		
 		if( g_BuyingAgentCount ) {
@@ -1178,6 +1195,7 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
 		}
 	}
 #undef CHECK_BOUNDS
+	free(matchedLoc);
     return (PUU32)_pMissionData;
 }
 
@@ -1209,7 +1227,7 @@ PUU32 ShowItem( MissionClassData* _pData, Item* _pItem, PUU32 _ObjId, PUU32 _Val
         WriteLog( "reward\t%u\t%u\t%u\t%s\n", ItemKey1, ItemKey2, QL, _pData->Reward.pName );
 
         sprintf( TempStr, "QL%u %s", QL, _pData->Reward.pName );
-        bNameMatch = SetAndSearch( TempStr, puGetObjectFromCollection( _pData->pCol, _ObjId ), g_ItemWatchList );
+        bNameMatch = SetAndSearch( TempStr, puGetObjectFromCollection( _pData->pCol, _ObjId ), g_ItemWatchList, NULL );
 
         int itemValue = _pData->Reward.Value * puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMVALUE_BUYMOD ), PUA_TEXTENTRY_VALUE ) / 100;
         puSetAttribute( puGetObjectFromCollection( _pData->pCol, _ValID ), PUA_TEXTENTRY_VALUE, itemValue );
@@ -1346,7 +1364,8 @@ static int ParseItemDisplayString(const char *display, char *itemName, size_t na
     return force;
 }
 
-PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
+PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List, PUU8** ppMatch )
+{
     PUU32 Record;
     PUU8* pString;
     PUU8 TmpItemName[ 256 ] = { 0 };
@@ -1378,28 +1397,28 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
                 int limit = 0;
                 int force = ParseItemDisplayString((char*)pString, cleanName, sizeof(cleanName),
                                                    &limit, excludeWords, sizeof(excludeWords));
-												   
-				int isContainerReward = 0;
-					for (int i = 0; container_prefixes[i] != NULL; i++) {
-						if (strstr((char*)TmpItemName, container_prefixes[i])) {
-							isContainerReward = 1;
-							break;
-						}
-					}
-					if (isContainerReward) {
-						int watchHasPrefix = 0;
-						for (int i = 0; container_prefixes[i] != NULL; i++) {
-							if (strstr(cleanName, container_prefixes[i])) {
-								watchHasPrefix = 1;
-								break;
-							}
-						}
-						if (!watchHasPrefix) {
-							Record = puDoMethod(_List, PUM_TABLE_GETNEXTRECORD, Record, 0);
-							continue;
-						}
-					}
-					
+                                                   
+                int isContainerReward = 0;
+                for (int i = 0; container_prefixes[i] != NULL; i++) {
+                    if (strstr((char*)TmpItemName, container_prefixes[i])) {
+                        isContainerReward = 1;
+                        break;
+                    }
+                }
+                if (isContainerReward) {
+                    int watchHasPrefix = 0;
+                    for (int i = 0; container_prefixes[i] != NULL; i++) {
+                        if (strstr(cleanName, container_prefixes[i])) {
+                            watchHasPrefix = 1;
+                            break;
+                        }
+                    }
+                    if (!watchHasPrefix) {
+                        Record = puDoMethod(_List, PUM_TABLE_GETNEXTRECORD, Record, 0);
+                        continue;
+                    }
+                }
+                    
                 char searchStr[512] = { 0 };
                 searchStr[0] = '\0';
                 strncat(searchStr, cleanName, sizeof(searchStr)-1);
@@ -1413,50 +1432,49 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
                 }
 
                 if( ItemMatch( TmpItemName, (PUU8*)searchStr ) ) {
-				int should_count = 1;
-				if (g_bUpdatingCounters && g_bIsFindItem && g_bIsReturnMission && g_bRewardMatched) {
-					should_count = 0;
-				}
-				
-				if( limit > 0 ) {
-					ItemCounter *ic = FindItemCounter( cleanName );
-					if( !ic ) {
-						AddItemCounter( cleanName, limit );
-						ic = FindItemCounter( cleanName );
-					}
-					if( ic ) {
-						if( g_bUpdatingCounters ) {   // ← changed: removed && should_count
-							if (ic->accepted < ic->limit) {
-								ic->accepted++;
-							}
-							if (ic->accepted == ic->limit) {
-								PUU32 nextRecord = puDoMethod(_List, PUM_TABLE_GETNEXTRECORD, Record, 0);
-								puDoMethod(g_DisabledItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
-								puDoMethod(g_DisabledItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
-								puDoMethod(g_DisabledItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)pString, 0);
-								puDoMethod(_List, PUM_TABLE_REMRECORD, Record, 0);
-								
-								PULID listView = puGetObjectFromCollection(g_pCol, CS_ITEMWATCH_LISTVIEW);
-								
-								puSetAttribute(listView, PUA_LISTVIEW_SELECTED, -1);
-								
-								PULID table = puGetAttribute(listView, PUA_LISTVIEW_TABLE);
-								if (table) {
-									puSetAttribute(listView, PUA_LISTVIEW_TABLE, 0);
-									puSetAttribute(listView, PUA_LISTVIEW_TABLE, table);
-								}
-								
-								puDoMethod(listView, PUM_CONTROL_RELAYOUT, 0, 0);
-								
-								Record = nextRecord;
-								continue;
-							}
-						} else if( ic->accepted >= ic->limit ) {
-							Record = puDoMethod( _List, PUM_TABLE_GETNEXTRECORD, Record, 0 );
-							continue;
-						}
-					}
-				}
+                    int should_count = 1;
+                    if (g_bUpdatingCounters && g_bIsFindItem && g_bIsReturnMission && g_bRewardMatched) {
+                        should_count = 0;
+                    }
+                    
+                    if( limit > 0 ) {
+                        ItemCounter *ic = FindItemCounter( cleanName );
+                        if( !ic ) {
+                            AddItemCounter( cleanName, limit );
+                            ic = FindItemCounter( cleanName );
+                        }
+                        if( ic ) {
+                            if( g_bUpdatingCounters ) {
+                                if (ic->accepted < ic->limit) {
+                                    ic->accepted++;
+                                }
+                                if (ic->accepted == ic->limit) {
+                                    PUU32 nextRecord = puDoMethod(_List, PUM_TABLE_GETNEXTRECORD, Record, 0);
+                                    puDoMethod(g_DisabledItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
+                                    puDoMethod(g_DisabledItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
+                                    puDoMethod(g_DisabledItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)pString, 0);
+                                    puDoMethod(_List, PUM_TABLE_REMRECORD, Record, 0);
+                                    
+                                    PULID listView = puGetObjectFromCollection(g_pCol, CS_ITEMWATCH_LISTVIEW);
+                                    puSetAttribute(listView, PUA_LISTVIEW_SELECTED, -1);
+                                    
+                                    PULID table = puGetAttribute(listView, PUA_LISTVIEW_TABLE);
+                                    if (table) {
+                                        puSetAttribute(listView, PUA_LISTVIEW_TABLE, 0);
+                                        puSetAttribute(listView, PUA_LISTVIEW_TABLE, table);
+                                    }
+                                    
+                                    puDoMethod(listView, PUM_CONTROL_RELAYOUT, 0, 0);
+                                    
+                                    Record = nextRecord;
+                                    continue;
+                                }
+                            } else if( ic->accepted >= ic->limit ) {
+                                Record = puDoMethod( _List, PUM_TABLE_GETNEXTRECORD, Record, 0 );
+                                continue;
+                            }
+                        }
+                    }
                     if( force ) {
                         g_bOverrideMatch = 1;
                     }
@@ -1469,6 +1487,10 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List ) {
                 }
             } else {
                 if( LocationMatch( TmpItemName, pString ) ) {
+                    // Store the matched location string if caller wants it
+                    if( ppMatch ) {
+                        *ppMatch = _strdup((char*)pString);
+                    }
                     if( !g_BuyingAgentCount || g_bForceUIRefresh ) {
                         puSetAttribute( _TextEntry, PUA_TEXTENTRY_HILIGHT,
                             puGetAttribute( puGetObjectFromCollection( g_pCol, CS_HIGHLIGHTLOC_CB ), PUA_CHECKBOX_CHECKED ) );
