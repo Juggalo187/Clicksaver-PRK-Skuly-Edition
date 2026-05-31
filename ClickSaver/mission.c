@@ -102,6 +102,15 @@ static const char* MissionTypeToString(PUU32 type) {
     }
 }
 
+static void TrimTrailingPunctuation(PUU8 *str)
+{
+    if (!str || !*str) return;
+    size_t len = strlen((char*)str);
+    while (len > 0 && strchr("!?.,;:)", str[len-1])) {
+        str[--len] = '\0';
+    }
+}
+
 static int IsValidItemName(const char* name) {
     if (!name || name[0] == '\0') return 0;
     size_t len = strlen(name);
@@ -985,6 +994,7 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     MishID = EndianSwap32( *(PUU32*)(_pMissionData + 0x04) );
     _pMissionData += 6 * 4;
     CHECK_BOUNDS(_pMissionData, 0);
+	
 	// Capture mission title (null-terminated string at current position)
 	char missionTitle[256] = {0};
 	const char* pTitle = (const char*)_pMissionData;
@@ -1062,16 +1072,34 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     TempVal = EndianSwap32( *(PUU32*)(_pMissionData + 0xbc) );
     *(PUU32*)(&CoordY) = TempVal;
     snprintf(TempStr, sizeof(TempStr), "%s (%.1f, %.1f)", PFName, CoordX, CoordY);
+
+    // Extract the raw playfield name from TempStr (before the first '(')
+    char rawPFName[256];
+    const char* paren = strchr(TempStr, '(');
+    if (paren) {
+        size_t len = paren - TempStr;
+        // Trim trailing spaces
+        while (len > 0 && TempStr[len-1] == ' ') len--;
+        if (len > 0 && len < sizeof(rawPFName)) {
+            memcpy(rawPFName, TempStr, len);
+            rawPFName[len] = '\0';
+        } else {
+            // Fallback to PFName from database
+            strcpy(rawPFName, PFName);
+        }
+    } else {
+        strcpy(rawPFName, PFName);
+    }
     
     bExitFound = CheckMissionNearExit(MishPF, CoordX, CoordY);
     char* matchedLoc = NULL;
-	bLocFound = SetAndSearch( TempStr, puGetObjectFromCollection( _pData->pCol, LOCATION ), g_LocWatchList, &matchedLoc );
+    bLocFound = SetAndSearch( TempStr, puGetObjectFromCollection( _pData->pCol, LOCATION ), g_LocWatchList, &matchedLoc );
     
-	const char* matchedExit = NULL;
-	if (bExitFound) {
-		matchedExit = GetMatchedExitName(MishPF, CoordX, CoordY);
-	}
-	
+    const char* matchedExit = NULL;
+    if (bExitFound) {
+        matchedExit = GetMatchedExitName(MishPF, CoordX, CoordY);
+    }
+    
     if (bExitFound && puGetAttribute(puGetObjectFromCollection(g_pCol, CS_HIGHLIGHTEXIT_CB), PUA_CHECKBOX_CHECKED)) {
         puSetAttribute(puGetObjectFromCollection(_pData->pCol, LOCATION), PUA_TEXTENTRY_HILIGHT, TRUE);
     }
@@ -1114,7 +1142,6 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     // Find item extraction (may set TempStr)
     if (TempVal == 0x2c49 || TempVal == 0x26add) {
         if (MissionFind(pDesc, DescLength, TempStr)) {
-            // WriteLog for find will be handled in debug section
             g_bIsFindItem = 1;
             g_bIsReturnMission = (TempVal == 0x26add);
             g_bRewardMatched = (PUU8)bRewardMatched;
@@ -1134,68 +1161,58 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     }
 
     char debugKey[512];
-	snprintf(debugKey, sizeof(debugKey), "%u|%u|%.1f|%.1f|%s", MishID, MishPF, CoordX, CoordY, TempStr);
-	time_t now = time(NULL);
-	if (strcmp(debugKey, g_LastDebugKey) != 0 || (now - g_LastDebugTime) >= 2) {
-		strncpy(g_LastDebugKey, debugKey, sizeof(g_LastDebugKey)-1);
-		g_LastDebugKey[sizeof(g_LastDebugKey)-1] = '\0';
-		g_LastDebugTime = now;
-	
-		// Write mission and location
-		WriteLog( "mission\t%u\t%u\t%u\t%u\t%s\n", MishID, MishQL, XP, Cash, CharKey );
-		WriteLog( "loc\t%u\t%.1f\t%.1f\t%s\n", MishPF, CoordX, CoordY, PFName );
-	
-		// Write reward logs (we need to re-iterate over items)
-		// We saved pItem's original start? We have pTmpItem initially at pItem, but after the reward loop pItem advanced.
-		// To avoid re-parsing, store reward strings in a temporary array during the first loop.
-		// Let's add a simple buffer: we can store each reward string in a char array.
-		// But to keep it simple, we'll just re-parse the items from the original data.
-		// Since we still have the original _pMissionData pointer? Not easily.
-		// Alternative: move the entire debug block BEFORE the reward loop, but then we don't have TempStr (find) yet.
-		// We can split: write mission/loc now, and write find later after we extract it. That would still deduplicate.
-		// Given the complexity and time, I'll provide a pragmatic solution: write only mission, loc, and find.
-		// The reward logs are less important for most users.
-	
-		// Write find if present
-		if (TempStr[0] != '\0') {
-			WriteLog( "find\t%s\n", TempStr );
-		}
-	}
+    snprintf(debugKey, sizeof(debugKey), "%u|%u|%.1f|%.1f|%s", MishID, MishPF, CoordX, CoordY, TempStr);
+    time_t now = time(NULL);
+    if (strcmp(debugKey, g_LastDebugKey) != 0 || (now - g_LastDebugTime) >= 2) {
+        strncpy(g_LastDebugKey, debugKey, sizeof(g_LastDebugKey)-1);
+        g_LastDebugKey[sizeof(g_LastDebugKey)-1] = '\0';
+        g_LastDebugTime = now;
+    
+        WriteLog( "mission\t%u\t%u\t%u\t%u\t%s\n", MishID, MishQL, XP, Cash, CharKey );
+        WriteLog( "loc\t%u\t%.1f\t%.1f\t%s\n", MishPF, CoordX, CoordY, PFName );
+    
+        if (TempStr[0] != '\0') {
+            WriteLog( "find\t%s\n", TempStr );
+        }
+    }
 
     if( g_bOverrideMatch ) {
-			bAccept = 1;
-		} else {
-			bAccept = bAlertItem || bAlertLoc || bAlertType || (bExitFound && bAlertExit);
-			if( bAlertItem ) bAccept = bAccept && bItemNameMatch;
-			if( bAlertLoc )  bAccept = bAccept && bLocFound;
-			if( bAlertType ) bAccept = bAccept && bTypeFound;
-			if( PUL_GET_CB(CS_ITEMVALUE_MSINGLE) || PUL_GET_CB(CS_ITEMVALUE_MTOTAL) )
-				bAccept = bAccept && bValueMatch;
-			if( bAlertExit ) bAccept = bAccept && bExitFound;
-		}
+        bAccept = 1;
+    } else {
+        bAccept = bAlertItem || bAlertLoc || bAlertType || (bExitFound && bAlertExit);
+        if( bAlertItem ) bAccept = bAccept && bItemNameMatch;
+        if( bAlertLoc )  bAccept = bAccept && bLocFound;
+        if( bAlertType ) bAccept = bAccept && bTypeFound;
+        if( PUL_GET_CB(CS_ITEMVALUE_MSINGLE) || PUL_GET_CB(CS_ITEMVALUE_MTOTAL) )
+            bAccept = bAccept && bValueMatch;
+        if( bAlertExit ) bAccept = bAccept && bExitFound;
+    }
     LogMissionDescription(TempVal, TempStr, pDesc, DescLength, missionTitle, MishID);
 
+    int acceptByExit = (bAlertExit && bExitFound);
+    int acceptByLocation = (bAlertLoc && bLocFound);
+
     if( bAccept ) {
-		int wasFirst = (g_FoundMish == 255);
-		if( wasFirst ) g_FoundMish = g_MishNumber;
-		
-		// Only log if this is the first accepted mission in this packet
-		if( wasFirst ) {
-			LogAcceptedMission(MishPF, CoordX, CoordY, TempVal, TempStr, MishID, missionTitle,
-                           matchedLoc, matchedExit);
-		}
-		
-		if( g_BuyingAgentCount ) {
-			g_BuyingAgentCount = 0;
-		} else {
-			if( puGetAttribute( puGetObjectFromCollection( g_pCol, CS_MSGBOX_CB ), PUA_CHECKBOX_CHECKED ) && !g_bFullscreen ) {
-				puSetAttribute( g_MainWin, PUA_WINDOW_ICONIFIED, FALSE );
-				puSetAttribute( puGetObjectFromCollection( g_pCol, CS_WATCH_MSGBOX ), PUA_WINDOW_OPENED, TRUE );
-			}
-		}
-	}
+        int wasFirst = (g_FoundMish == 255);
+        if( wasFirst ) g_FoundMish = g_MishNumber;
+        
+        // Only log if this is the first accepted mission in this packet
+        if (wasFirst) {
+            LogAcceptedMission(MishPF, CoordX, CoordY, TempVal, TempStr, MishID, missionTitle,
+                   matchedLoc, matchedExit, acceptByLocation, acceptByExit, rawPFName);
+        }
+        
+        if( g_BuyingAgentCount ) {
+            g_BuyingAgentCount = 0;
+        } else {
+            if( puGetAttribute( puGetObjectFromCollection( g_pCol, CS_MSGBOX_CB ), PUA_CHECKBOX_CHECKED ) && !g_bFullscreen ) {
+                puSetAttribute( g_MainWin, PUA_WINDOW_ICONIFIED, FALSE );
+                puSetAttribute( puGetObjectFromCollection( g_pCol, CS_WATCH_MSGBOX ), PUA_WINDOW_OPENED, TRUE );
+            }
+        }
+    }
 #undef CHECK_BOUNDS
-	free(matchedLoc);
+    free(matchedLoc);
     return (PUU32)_pMissionData;
 }
 
@@ -2300,14 +2317,13 @@ GetAOIconData_Exit_Fail:
     return NULL;
 }
 
-
 typedef struct findname_struc
 {
     char *strStart;
     char *strEnd;
 } udtFindName_struc;
 
-#define CNT_FINDNAME 52
+#define CNT_FINDNAME 56
 static udtFindName_struc a_udtFindName[CNT_FINDNAME] = {
     "Find prototype ", "!!",
 	"The Weird-Looking Bomb", " found ",
@@ -2361,6 +2377,10 @@ static udtFindName_struc a_udtFindName[CNT_FINDNAME] = {
     "who or where he is, before you collect the ", " from ",
     "you might be able to find one ", ". Bring it back to us",
     "In this case the ", " is missing",
+    "developed a prototype ", ". ",
+    "prototype ", "!!",
+	"where the ", " has been hidden",
+    "the ", " has been hidden",
 	
 };
 
@@ -2431,27 +2451,31 @@ static int FindItemInDescriptionFromCache(const PUU8* desc, unsigned long descLe
 
 PUU32 MissionFind(PUU8* _pMissionDesc, PUU32 _DescLen, PUU8* _pItemName)
 {
-	if (_pItemName) _pItemName[0] = '\0';
+    if (_pItemName) _pItemName[0] = '\0';
+    
+    // 1. Try cache lookup first
     if (FindItemInDescriptionFromCache(_pMissionDesc, _DescLen, _pItemName)) {
         if (!ShouldSkipItemName((const char*)_pItemName)) {
+            TrimTrailingPunctuation(_pItemName);
             return TRUE;
         }
     }
-	
+    
+    // 2. Check common items list
     const char* desc = (const char*)_pMissionDesc;
     const char* descEnd = desc + _DescLen;
-
     for (int i = 0; g_common_items[i]; i++) {
         const char* item = g_common_items[i];
         long pos = FindSubstringCI(_pMissionDesc, _DescLen, item);
         if (pos >= 0) {
             strncpy((char*)_pItemName, item, 255);
             _pItemName[255] = '\0';
+            TrimTrailingPunctuation(_pItemName);
             return TRUE;
         }
     }
 
-    // ---- STEP 1: Hardcoded pattern array (specific patterns first) ----
+    // 3. Hardcoded patterns (existing)
     for (int lLoop = 0; lLoop < CNT_FINDNAME; lLoop++) {
         long lPosStart = FindStr(_pMissionDesc, _DescLen,
                                  (PUU8*)a_udtFindName[lLoop].strStart,
@@ -2464,11 +2488,13 @@ PUU32 MissionFind(PUU8* _pMissionDesc, PUU32 _DescLen, PUU8* _pItemName)
                                    (PUU8*)a_udtFindName[lLoop].strEnd,
                                    strlen(a_udtFindName[lLoop].strEnd));
             if (lLength >= 0) {
-				if (lLength > 255) lLength = 255;
-				memcpy(_pItemName, strStart, lLength);
-				_pItemName[lLength] = 0;
-                size_t len = strlen(_pItemName);
+                if (lLength > 255) lLength = 255;
+                memcpy(_pItemName, strStart, lLength);
+                _pItemName[lLength] = 0;
+                // Trim whitespace and trailing punctuation
+                size_t len = strlen((char*)_pItemName);
                 while (len > 0 && _pItemName[len-1] == ' ') _pItemName[--len] = '\0';
+                TrimTrailingPunctuation(_pItemName);
                 if (IsValidItemName((char*)_pItemName)) {
                     return TRUE;
                 }
@@ -2476,7 +2502,7 @@ PUU32 MissionFind(PUU8* _pMissionDesc, PUU32 _DescLen, PUU8* _pItemName)
         }
     }
 
-    // ---- STEP 2: Generic extraction (fallback) ----
+    // 4. Generic extraction with improved period handling
     static const char* triggers[] = {
         "find the ", "bring the ", "collect the ", "retrieve the ",
         "obtain the ", "a prototype ", "the prototype ", "Find prototype ",
@@ -2492,12 +2518,27 @@ PUU32 MissionFind(PUU8* _pMissionDesc, PUU32 _DescLen, PUU8* _pItemName)
         while (start < descEnd && *start == ' ') start++;
         if (start >= descEnd) continue;
         if (!(*start >= 'A' && *start <= 'Z')) continue;
+        
         const char* end = start;
-        while (end < descEnd && *end != '.') {
-            if (*end == '!' && (end[1] == '!' || end[1] == ' ' || end[1] == '\0')) break;
-            if (*end == ',' && end + 2 <= descEnd && end[1] == ' ') break;
-            if (strncmp(end, "&mdash;", 7) == 0) break;
-            if (*end == ' ' && end + 6 <= descEnd) {
+        int in_abbrev = 0;
+        while (end < descEnd) {
+            char c = *end;
+            // Stop at end markers
+            if (c == '.' && (end + 1 < descEnd) && (end[1] == ' ' || end[1] == '\0')) {
+                // Period at end of sentence: stop after including period?
+                // For "Galahad Inc. Ginger Scout", we need to keep period if next word starts uppercase.
+                if (end + 2 < descEnd && end[2] >= 'A' && end[2] <= 'Z') {
+                    // Uppercase after period+space -> likely part of name, keep going
+                    end++;
+                    continue;
+                } else {
+                    break; // sentence end
+                }
+            }
+            if (c == '!' && (end + 1 >= descEnd || end[1] == ' ')) break;
+            if (c == ',' && (end + 1 >= descEnd || end[1] == ' ')) break;
+            if (c == ';' && (end + 1 >= descEnd || end[1] == ' ')) break;
+            if (c == ' ' && end + 6 <= descEnd) {
                 if (strncmp(end, " in ", 4) == 0 ||
                     strncmp(end, " from ", 6) == 0 ||
                     strncmp(end, " to ", 4) == 0 ||
@@ -2511,6 +2552,7 @@ PUU32 MissionFind(PUU8* _pMissionDesc, PUU32 _DescLen, PUU8* _pItemName)
                     strncmp(end, " please", 7) == 0 ||
                     strncmp(end, " found ", 7) == 0 ||
                     strncmp(end, " is ", 4) == 0 ||
+					strncmp(end, " has been hidden", 16) == 0 ||
                     strncmp(end, " lies ", 6) == 0)
                     break;
             }
@@ -2519,12 +2561,14 @@ PUU32 MissionFind(PUU8* _pMissionDesc, PUU32 _DescLen, PUU8* _pItemName)
         size_t len = end - start;
         if (len > 0 && len < 256) {
             memcpy(_pItemName, start, len);
-                _pItemName[len] = '\0';
-                size_t len2 = strlen(_pItemName);
-                while (len2 > 0 && _pItemName[len2-1] == ' ') _pItemName[--len2] = '\0';
-                if (IsValidItemName((char*)_pItemName)) {
-                    return TRUE;
-                }
+            _pItemName[len] = '\0';
+            // Trim trailing spaces and punctuation
+            size_t len2 = strlen((char*)_pItemName);
+            while (len2 > 0 && _pItemName[len2-1] == ' ') _pItemName[--len2] = '\0';
+            TrimTrailingPunctuation(_pItemName);
+            if (IsValidItemName((char*)_pItemName)) {
+                return TRUE;
+            }
         }
     }
     return FALSE;

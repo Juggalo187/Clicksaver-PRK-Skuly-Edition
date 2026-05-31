@@ -92,7 +92,8 @@ static FILE* g_AcceptedLogFile = NULL;
 void ResetAcceptedMissionLog(void);
 void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId,
                         const char* findItem, PUU32 mishId, const char* missionTitle,
-                        const char* matchedLocation, const char* matchedExit);
+                        const char* matchedLocation, const char* matchedExit,
+                        int useLocation, int useExit, const char* rawPFName);
 void CloseAcceptedMissionLog(void);
 
 sqlite3*      g_pSQLite = NULL;
@@ -156,13 +157,17 @@ DWORD WINAPI HookManagerThread( void *pParam );
 static HBRUSH g_hDialogBgBrush = NULL;
 static HBRUSH g_hButtonBgBrush = NULL;
 
-static char** g_LoggedMissionKeys = NULL;
+typedef struct {
+    char* header;
+    char* line;
+	char* key;
+} LoggedMission;
+
+static LoggedMission* g_LoggedMissions = NULL;
 static int g_LoggedMissionCount = 0;
 static int g_LoggedMissionCapacity = 0;
 
-static char** g_PrintedHeaders = NULL;
-static int g_PrintedHeaderCount = 0;
-static int g_PrintedHeaderCapacity = 0;
+static char*  g_LastPrintedHeader = NULL;
 
 static const char* const PROP_BUTTON_IDS = "ClickSaver_OwnerDrawButtons";
 
@@ -1748,6 +1753,23 @@ static void ImportLocations(const char *filename, int replaceMode)
 
 int main( int argc, char** argv )
 {
+	if( ( g_Mutex = CreateMutex( NULL, FALSE, "ClickSaver" ) ) == INVALID_HANDLE_VALUE )
+    {
+        DisplayErrorMessage( "Couldn't create mutex.", FALSE );
+        ReleaseAODatabase();
+        CleanUp();
+        return -1;
+    }
+	
+    if( GetLastError() == ERROR_ALREADY_EXISTS )
+    {
+        HWND hWnd;
+        if( hWnd = FindWindow( "ClickSaverHookWindowClass", "ClickSaverHookWindow" ) )
+        {
+            return -1;
+        }
+    }
+	
     pusAppMessage* pAppMsg;
     void* pMissionData;
     PULID MissionControls[5] = {0};
@@ -1757,7 +1779,7 @@ int main( int argc, char** argv )
     HANDLE hOrigDB;
 
     char DBPath[ 256 * 2 ];
-
+	
     SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL );
 
     if( !puInit() )
@@ -1833,23 +1855,6 @@ int main( int argc, char** argv )
 		return -1;
 	}
 
-    if( ( g_Mutex = CreateMutex( NULL, FALSE, "ClickSaver" ) ) == INVALID_HANDLE_VALUE )
-    {
-        DisplayErrorMessage( "Couldn't create mutex.", FALSE );
-        ReleaseAODatabase();
-        CleanUp();
-        return -1;
-    }
-	
-    if( GetLastError() == ERROR_ALREADY_EXISTS )
-    {
-        HWND hWnd;
-        if( hWnd = FindWindow( "ClickSaverHookWindowClass", "ClickSaverHookWindow" ) )
-        {
-            return -1;
-        }
-    }
-	
 	g_hThreadExitEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 	if (g_hThreadExitEvent == NULL) {
 		DisplayErrorMessage("Failed to create exit event.", FALSE);
@@ -3387,25 +3392,66 @@ static void GetPlayfieldName(int zoneId, char* buf, size_t bufSize) {
     }
 }
 
+static void FlushAcceptedMissionLog(void) {
+    if (!g_AcceptedLogFile || g_LoggedMissionCount == 0) return;
+
+    // Collect unique headers in order of first appearance
+    char** headers = NULL;
+    int headerCount = 0;
+    int headerCapacity = 0;
+
+    for (int i = 0; i < g_LoggedMissionCount; i++) {
+        int found = 0;
+        for (int j = 0; j < headerCount; j++) {
+            if (strcmp(g_LoggedMissions[i].header, headers[j]) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            if (headerCount >= headerCapacity) {
+                headerCapacity = headerCapacity ? headerCapacity * 2 : 8;
+                headers = realloc(headers, headerCapacity * sizeof(char*));
+            }
+            headers[headerCount++] = g_LoggedMissions[i].header;
+        }
+    }
+
+    // Write each header followed by all its missions
+    for (int h = 0; h < headerCount; h++) {
+        fprintf(g_AcceptedLogFile, "\n[%s]\n", headers[h]);
+        for (int i = 0; i < g_LoggedMissionCount; i++) {
+            if (strcmp(g_LoggedMissions[i].header, headers[h]) == 0) {
+                fprintf(g_AcceptedLogFile, "%s\n", g_LoggedMissions[i].line);
+            }
+        }
+    }
+
+    free(headers);
+    fflush(g_AcceptedLogFile);
+}
+
 void ResetAcceptedMissionLog(void) {
-	
-    for (int i = 0; i < g_PrintedHeaderCount; i++)
-        free(g_PrintedHeaders[i]);
-    free(g_PrintedHeaders);
-    g_PrintedHeaders = NULL;
-    g_PrintedHeaderCount = g_PrintedHeaderCapacity = 0;
-	
     if (g_AcceptedLogFile) {
+        FlushAcceptedMissionLog();
         fclose(g_AcceptedLogFile);
         g_AcceptedLogFile = NULL;
     }
-	
-	free(g_LoggedMissionKeys);
-    g_LoggedMissionKeys = NULL;
+
+    WaitForSingleObject(g_Mutex, INFINITE);
+
+    for (int i = 0; i < g_LoggedMissionCount; i++) {
+        free(g_LoggedMissions[i].header);
+        free(g_LoggedMissions[i].line);
+		free(g_LoggedMissions[i].key);
+    }
+    free(g_LoggedMissions);
+    g_LoggedMissions = NULL;
     g_LoggedMissionCount = 0;
     g_LoggedMissionCapacity = 0;
 
-    // Open log file in append mode (creates if needed)
+    ReleaseMutex(g_Mutex);
+
     g_AcceptedLogFile = fopen("AcceptedMissions.txt", "a");
     if (!g_AcceptedLogFile) {
         DisplayErrorMessage("Could not open AcceptedMissions.txt for writing.", TRUE);
@@ -3420,135 +3466,102 @@ void ResetAcceptedMissionLog(void) {
     fflush(g_AcceptedLogFile);
 }
 
-void StartNewAcceptedMissionSession(void)
-{
-    for (int i = 0; i < g_PrintedHeaderCount; i++)
-        free(g_PrintedHeaders[i]);
-    free(g_PrintedHeaders);
-    g_PrintedHeaders = NULL;
-    g_PrintedHeaderCount = g_PrintedHeaderCapacity = 0;
-	
-    if (!g_AcceptedLogFile) {
-        ResetAcceptedMissionLog();
-        return;
+void StartNewAcceptedMissionSession(void) {
+    WaitForSingleObject(g_Mutex, INFINITE);
+
+    for (int i = 0; i < g_LoggedMissionCount; i++) {
+        free(g_LoggedMissions[i].header);
+        free(g_LoggedMissions[i].line);
+		free(g_LoggedMissions[i].key);
     }
+    free(g_LoggedMissions);
+    g_LoggedMissions = NULL;
+    g_LoggedMissionCount = 0;
+    g_LoggedMissionCapacity = 0;
 
-    // Clear mission keys cache only
-    for (int i = 0; i < g_LoggedMissionCount; i++)
-        free(g_LoggedMissionKeys[i]);
-    free(g_LoggedMissionKeys);
-    g_LoggedMissionKeys = NULL;
-    g_LoggedMissionCount = g_LoggedMissionCapacity = 0;
-
-    // Write a new session header
-    time_t now = time(NULL);
-    struct tm* tm_info = localtime(&now);
-    char timeBuf[64];
-    strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", tm_info);
-    fprintf(g_AcceptedLogFile, "\n=== New Session: %s ===\n", timeBuf);
-    fflush(g_AcceptedLogFile);
+    ReleaseMutex(g_Mutex);
 }
 
 void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId,
                         const char* findItem, PUU32 mishId, const char* missionTitle,
-                        const char* matchedLocation, const char* matchedExit)
+                        const char* matchedLocation, const char* matchedExit,
+                        int useLocation, int useExit, const char* rawPFName)
 {
     if (!g_AcceptedLogFile) return;
 
-    char pfName[256];
-    const char* displayName = NULL;
+    // Determine header
+    const char* headerSrc = (useExit && matchedExit) ? matchedExit
+                                                      : (rawPFName ? rawPFName : "Unknown");
+    char* headerStr = _strdup(headerSrc);
 
-    if (matchedExit) {
-        displayName = matchedExit;
-    } else if (matchedLocation) {
-        // Strip coordinates: copy everything before the first '('
-        static char locName[256];
-        const char* paren = strchr(matchedLocation, '(');
-        if (paren) {
-            size_t len = paren - matchedLocation;
-            while (len > 0 && matchedLocation[len-1] == ' ') len--;
-            if (len > 0 && len < sizeof(locName)) {
-                memcpy(locName, matchedLocation, len);
-                locName[len] = '\0';
-                displayName = locName;
-            } else {
-                displayName = matchedLocation;
-            }
-        } else {
-            displayName = matchedLocation;
-        }
-    } else {
-        GetPlayfieldName(zoneId, pfName, sizeof(pfName));
-        displayName = pfName;
-    }
+    // Determine extra info
+    char extraInfo[256] = "";
+    if (useExit && matchedExit)
+        snprintf(extraInfo, sizeof(extraInfo), " (%s)", matchedExit);
+    else if (useLocation && matchedLocation)
+        snprintf(extraInfo, sizeof(extraInfo), " (%s)", matchedLocation);
 
-    // Check if this displayName already has a header in this session
-    int alreadyPrinted = 0;
-    for (int i = 0; i < g_PrintedHeaderCount; i++) {
-        if (strcmp(displayName, g_PrintedHeaders[i]) == 0) {
-            alreadyPrinted = 1;
-            break;
-        }
-    }
-
-    // Write header only if it hasn't appeared before in this session
-    if (!alreadyPrinted) {
-        fprintf(g_AcceptedLogFile, "\n[%s]\n", displayName);
-        // Remember that we've printed this header
-        if (g_PrintedHeaderCount >= g_PrintedHeaderCapacity) {
-            g_PrintedHeaderCapacity = g_PrintedHeaderCapacity ? g_PrintedHeaderCapacity * 2 : 16;
-            g_PrintedHeaders = realloc(g_PrintedHeaders, g_PrintedHeaderCapacity * sizeof(char*));
-        }
-        g_PrintedHeaders[g_PrintedHeaderCount++] = _strdup(displayName);
-    }
-
+    // Build mission line
     const char* missionType = MissionTypeIdToString(missionTypeId);
     char missionDesc[512];
-    if (missionTitle && missionTitle[0]) {
+    if (missionTitle && missionTitle[0])
         snprintf(missionDesc, sizeof(missionDesc), "%s [%s]", missionType, missionTitle);
-    } else {
+    else
         snprintf(missionDesc, sizeof(missionDesc), "%s", missionType);
-    }
 
-    // Build a unique key to avoid duplicate entries in the same session
+    char lineStr[1024];
+    snprintf(lineStr, sizeof(lineStr), "%s - /waypoint %.1f %.1f %d%s",
+             missionDesc, x, y, zoneId, extraInfo);
+
+    // Build dedup key
     char key[512];
-    snprintf(key, sizeof(key), "%u|%s|%s|%.1f|%.1f|%d", mishId, missionDesc, displayName, x, y, zoneId);
+    snprintf(key, sizeof(key), "%u|%s|%.1f|%.1f|%d",
+             mishId, missionTitle ? missionTitle : "", x, y, zoneId);
 
+    WaitForSingleObject(g_Mutex, INFINITE);
+
+    // Duplicate check against existing buffered lines
     for (int i = 0; i < g_LoggedMissionCount; i++) {
-        if (strcmp(key, g_LoggedMissionKeys[i]) == 0)
-            return;
-    }
+		if (strcmp(g_LoggedMissions[i].key, key) == 0) {
+			ReleaseMutex(g_Mutex);
+			free(headerStr);
+			return;
+		}
+	}
 
+    // Buffer the mission
     if (g_LoggedMissionCount >= g_LoggedMissionCapacity) {
         g_LoggedMissionCapacity = g_LoggedMissionCapacity ? g_LoggedMissionCapacity * 2 : 16;
-        g_LoggedMissionKeys = realloc(g_LoggedMissionKeys, g_LoggedMissionCapacity * sizeof(char*));
+        g_LoggedMissions = realloc(g_LoggedMissions, g_LoggedMissionCapacity * sizeof(LoggedMission));
     }
-    g_LoggedMissionKeys[g_LoggedMissionCount++] = _strdup(key);
+    g_LoggedMissions[g_LoggedMissionCount].header = headerStr;
+    g_LoggedMissions[g_LoggedMissionCount].line   = _strdup(lineStr);
+	g_LoggedMissions[g_LoggedMissionCount].key    = _strdup(key);
+    g_LoggedMissionCount++;
 
-    fprintf(g_AcceptedLogFile, "%s - /waypoint %.1f %.1f %d\n",
-            missionDesc, x, y, zoneId);
-    fflush(g_AcceptedLogFile);
+    ReleaseMutex(g_Mutex);
 }
 
 void CloseAcceptedMissionLog(void) {
     if (g_AcceptedLogFile) {
+        FlushAcceptedMissionLog();
         fclose(g_AcceptedLogFile);
         g_AcceptedLogFile = NULL;
     }
 
-    // Free session cache
+    WaitForSingleObject(g_Mutex, INFINITE);
+
     for (int i = 0; i < g_LoggedMissionCount; i++) {
-        free(g_LoggedMissionKeys[i]);
+        free(g_LoggedMissions[i].header);
+        free(g_LoggedMissions[i].line);
+		free(g_LoggedMissions[i].key);
     }
-    free(g_LoggedMissionKeys);
-    g_LoggedMissionKeys = NULL;
-    g_LoggedMissionCount = g_LoggedMissionCapacity = 0;
-	
-	for (int i = 0; i < g_PrintedHeaderCount; i++)
-        free(g_PrintedHeaders[i]);
-    free(g_PrintedHeaders);
-    g_PrintedHeaders = NULL;
-    g_PrintedHeaderCount = g_PrintedHeaderCapacity = 0;
+    free(g_LoggedMissions);
+    g_LoggedMissions = NULL;
+    g_LoggedMissionCount = 0;
+    g_LoggedMissionCapacity = 0;
+
+    ReleaseMutex(g_Mutex);
 }
 
 void UpdateAcceptedCountersForMission( int mishIndex )

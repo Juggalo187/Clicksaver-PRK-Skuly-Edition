@@ -214,6 +214,7 @@ void WriteDebug( const char* txt );
 const char* GetMatchedExitName(int zoneId, float x, float y);
 void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId,
                         const char* findItem, PUU32 mishId, const char* missionTitle,
-                        const char* matchedLocation, const char* matchedExit);
+                        const char* matchedLocation, const char* matchedExit,
+                        int useLocation, int useExit, const char* rawPFName);
 
 #endif
