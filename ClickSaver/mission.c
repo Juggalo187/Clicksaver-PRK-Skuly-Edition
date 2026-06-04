@@ -111,6 +111,33 @@ static void TrimTrailingPunctuation(PUU8 *str)
     }
 }
 
+static void NormalizeItemName(char *name) {
+    if (!name || !*name) return;
+
+    // 1. Remove HTML entities
+    char *p;
+    while ((p = strstr(name, "&mdash;")) != NULL) {
+        memmove(p, p + 7, strlen(p + 7) + 1);
+    }
+    while ((p = strstr(name, "&amp;")) != NULL) {
+        memmove(p, p + 5, strlen(p + 5) + 1);
+    }
+    while ((p = strstr(name, "&quot;")) != NULL) {
+        memmove(p, p + 6, strlen(p + 6) + 1);
+    }
+
+    // 2. Trim leading/trailing spaces
+    while (*name == ' ') name++;
+    size_t len = strlen(name);
+    while (len > 0 && name[len-1] == ' ') name[--len] = '\0';
+
+    // 3. Remove trailing punctuation (but keep internal punctuation like periods in "Inc.")
+    len = strlen(name);
+    while (len > 0 && strchr("!?.,;:)", name[len-1])) {
+        name[--len] = '\0';
+    }
+}
+
 static int IsValidItemName(const char* name) {
     if (!name || name[0] == '\0') return 0;
     size_t len = strlen(name);
@@ -216,7 +243,6 @@ int ShouldSkipItemName(const char *name) {
 		"Yalmaha",
 		" Device",
 		" Corroded",
-		"Container",
 		"Ruby",
 		"Perfectly Cut",
 		"Small",
@@ -503,25 +529,31 @@ static int IsRealItemName(const char *name) {
 
 void LogMissionDescription(PUU32 missionType, const char *findItem,
                            const PUU8* pDesc, PUU32 descLen,
-                           const char *missionTitle, PUU32 mishId){
-    // Only log for Find Item or Return Item missions
+                           const char *missionTitle, PUU32 mishId)
+{
     if (!(missionType == 0x2c49 || missionType == 0x26add))
         return;
 
-    // Determine if this is a failure or suspicious case
     int hasItem = (findItem && findItem[0] != '\0');
     int suspicious = 0;
+
     if (hasItem) {
-        int wordCount = WordCount(findItem);
-        if (wordCount <= 2 && !IsCommonItem(findItem) && !IsRealItemNameCI(findItem))
+        // Make a copy to normalize without changing original
+        char normalized[256];
+        strncpy(normalized, findItem, sizeof(normalized)-1);
+        normalized[sizeof(normalized)-1] = '\0';
+        NormalizeItemName(normalized);
+
+        int wordCount = WordCount(normalized);
+        if (wordCount <= 2 && !IsCommonItem(normalized) && !IsRealItemNameCI(normalized)) {
             suspicious = 1;
+        }
     }
 
-    // Log only failures (empty item) or suspicious short items
+    // Log only failures (empty) or suspicious after normalization
     if (hasItem && !suspicious)
         return;
 
-    // Open log file in append mode
     FILE* f = fopen("SkulyDebug.log", "a");
     if (!f) return;
 
@@ -543,12 +575,17 @@ void LogMissionDescription(PUU32 missionType, const char *findItem,
     fprintf(f, "Mission ID: %u\n", mishId);
     fprintf(f, "Title: %s\n", missionTitle ? missionTitle : "(none)");
     fprintf(f, "Type: %s (0x%X)\n", typeStr, missionType);
-    fprintf(f, "Extracted findItem: \"%s\"\n", hasItem ? findItem : "(empty)");
+    fprintf(f, "Extracted findItem (raw): \"%s\"\n", hasItem ? findItem : "(empty)");
+
     if (!hasItem) {
         fprintf(f, "FAILED TO EXTRACT ANY ITEM NAME.\n");
         fprintf(f, "Full mission description (%u bytes):\n%.*s\n", descLen, descLen, (const char*)pDesc);
     } else if (suspicious) {
-        fprintf(f, "SUSPICIOUS SHORT ITEM NAME (not in DB, not common).\n");
+        char normalized[256];
+        strncpy(normalized, findItem, sizeof(normalized)-1);
+        normalized[sizeof(normalized)-1] = '\0';
+        NormalizeItemName(normalized);
+        fprintf(f, "SUSPICIOUS SHORT ITEM NAME (after normalization: \"%s\" not in DB, not common).\n", normalized);
         fprintf(f, "Full mission description (%u bytes):\n%.*s\n", descLen, descLen, (const char*)pDesc);
     }
     fclose(f);
@@ -1328,7 +1365,7 @@ static int ParseItemDisplayString(const char *display, char *itemName, size_t na
 {
     itemName[0] = '\0';
     if (excludeWords) excludeWords[0] = '\0';
-    *limit = 0;
+    *limit = 1;
     if (!display || !*display) return 0;
 
     char buf[1024];
@@ -1353,12 +1390,16 @@ static int ParseItemDisplayString(const char *display, char *itemName, size_t na
             force = 1;
             p += 13;
         }
-        else if (strncmp(p, "qty ", 4) == 0) {
-            p += 4;
-            *limit = atoi(p);
-            while (*p && *p != ']') p++;
-            if (*p == ']') p++;
-        }
+        else if (strncmp(p, "unlimited]", 10) == 0) {
+			*limit = 0;
+			p += 10;
+		}
+		else if (strncmp(p, "qty ", 4) == 0) {
+			p += 4;
+			*limit = atoi(p);
+			while (*p && *p != ']') p++;
+			if (*p == ']') p++;
+		}
         else if (strncmp(p, "exclude: ", 9) == 0) {
             p += 9;
             char *end = strchr(p, ']');
@@ -2519,20 +2560,17 @@ PUU32 MissionFind(PUU8* _pMissionDesc, PUU32 _DescLen, PUU8* _pItemName)
         if (start >= descEnd) continue;
         if (!(*start >= 'A' && *start <= 'Z')) continue;
         
-        const char* end = start;
-        int in_abbrev = 0;
+       const char* end = start;
         while (end < descEnd) {
             char c = *end;
-            // Stop at end markers
+            // Improved period handling
             if (c == '.' && (end + 1 < descEnd) && (end[1] == ' ' || end[1] == '\0')) {
-                // Period at end of sentence: stop after including period?
-                // For "Galahad Inc. Ginger Scout", we need to keep period if next word starts uppercase.
-                if (end + 2 < descEnd && end[2] >= 'A' && end[2] <= 'Z') {
-                    // Uppercase after period+space -> likely part of name, keep going
-                    end++;
+                // Look ahead: if next char after space is uppercase OR digit, keep the period
+                if (end + 2 < descEnd && (isupper((unsigned char)end[2]) || isdigit((unsigned char)end[2]))) {
+                    end++;  // keep this period and continue
                     continue;
                 } else {
-                    break; // sentence end
+                    break;  // end of sentence
                 }
             }
             if (c == '!' && (end + 1 >= descEnd || end[1] == ' ')) break;
@@ -2552,7 +2590,6 @@ PUU32 MissionFind(PUU8* _pMissionDesc, PUU32 _DescLen, PUU8* _pItemName)
                     strncmp(end, " please", 7) == 0 ||
                     strncmp(end, " found ", 7) == 0 ||
                     strncmp(end, " is ", 4) == 0 ||
-					strncmp(end, " has been hidden", 16) == 0 ||
                     strncmp(end, " lies ", 6) == 0)
                     break;
             }

@@ -859,10 +859,11 @@ void BuildItemString(char *dest, size_t destSize, const char *itemName,
     len += snprintf(dest + len, destSize - len, "%s", itemName);
     if (len < 0 || (size_t)len >= destSize) goto trunc;
 
-    if (quantityLimit > 0) {
-        len += snprintf(dest + len, destSize - len, ";%d", quantityLimit);
-        if (len < 0 || (size_t)len >= destSize) goto trunc;
-    }
+    if (quantityLimit > 1) {
+		len += snprintf(dest + len, destSize - len, ";%d", quantityLimit);
+	} else if (quantityLimit == 0) {
+		len += snprintf(dest + len, destSize - len, ";0");
+	}
 
     if (excludeWords && *excludeWords) {
         char *tmp = _strdup(excludeWords);
@@ -893,7 +894,7 @@ void ParseItemString(const char *src,
 {
     *disabled = 0;
     *forceAccept = 0;
-    *quantityLimit = 0;
+    *quantityLimit = 1;
     if (excludeWords) excludeWords[0] = '\0';
     itemName[0] = '\0';
     if (!src) return;
@@ -972,10 +973,13 @@ void FormatItemForDisplay(const char *raw, char *out, size_t outSize)
         len += snprintf(out + len, outSize - len, " [force accept]");
         if (len < 0 || (size_t)len >= outSize) goto truncation;
     }
-    if (limit > 0) {
-        len += snprintf(out + len, outSize - len, " [qty %d]", limit);
-        if (len < 0 || (size_t)len >= outSize) goto truncation;
-    }
+    if (limit > 1) {
+		len += snprintf(out + len, outSize - len, " [qty %d]", limit);
+	} else if (limit == 1) {
+		len += snprintf(out + len, outSize - len, " [qty 1]");
+	} else if (limit == 0) {
+		len += snprintf(out + len, outSize - len, " [unlimited]");
+	}
     if (exclude[0]) {
         char buf[512];
         char tmp[256];
@@ -1008,7 +1012,7 @@ static int ParseDisplayString(const char *display, char *itemName, size_t itemNa
 {
     *disabled = 0;
     *forceAccept = 0;
-    *quantityLimit = 0;
+    *quantityLimit = 1;
     if (excludeWords) excludeWords[0] = '\0';
     if (itemName) itemName[0] = '\0';
 
@@ -1046,6 +1050,10 @@ static int ParseDisplayString(const char *display, char *itemName, size_t itemNa
             while (*p && *p != ']') p++;
             if (*p == ']') p++;
         }
+		else if (strncmp(p, "unlimited]", 10) == 0) {
+			*quantityLimit = 0;
+			p += 10;
+		}
         else if (strncmp(p, "exclude: ", 9) == 0) {
             p += 9;
             char *end = strchr(p, ']');
@@ -2505,6 +2513,18 @@ if (!LoadItemNameCache(cachePath)) {
                 if( bWarnItem ) bReadyToGo = bReadyToGo && bItemListOk;
                 if( bWarnLoc ) bReadyToGo = bReadyToGo && bLocListOk;
                 if( bWarnType ) bReadyToGo = bReadyToGo && bTypeListOk;
+				
+				if( bReadyToGo && !bWarnItem && bItemListOk )
+					{
+						int result = ShowModalMessage( (HWND)puGetAttribute(g_MainWin, PUA_WINDOW_HANDLE),
+							"You have items in your watchlist but item matching is disabled.\n\n"
+							"Are you sure you want to run the buying agent without item matching?",
+							"Confirm Start", MB_YESNO | MB_ICONQUESTION );
+						if( result != IDYES )
+						{
+							break;  // User cancelled, do not start
+						}
+					}
 
                 if( bReadyToGo )
                 {
