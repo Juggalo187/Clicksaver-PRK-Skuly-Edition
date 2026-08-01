@@ -127,7 +127,7 @@ PULID g_DisabledItemWatchList;
 void _setSliders( int easy_hard, int good_bad, int order_chaos, int open_hidden, int phys_myst, int headon_stealth, int money_xp );
 
 PUU32 g_BuyingAgentCount = 0;
-PUU32 g_BuyingAgentDelay = 5200;
+PUU32 g_BuyingAgentDelay = 2200;
 PUU32 g_BuyingAgentMissions = 0;
 PUU32 g_BuyingAgentMaxTries = 0;
 PUU32 g_BuyingAgentMaxMissions = 0;
@@ -2118,11 +2118,11 @@ if (!LoadItemNameCache(cachePath)) {
 				PULID delayCtrl = puGetObjectFromCollection( g_pCol, CS_BUYINGAGENTDELAY_ENTRY );
 				if (delayCtrl) {
 					int newDelay = puGetAttribute( delayCtrl, PUA_TEXTENTRY_VALUE );
-					if (newDelay >= 5200 && newDelay <= 15000) {
+					if (newDelay >= 1200 && newDelay <= 2200) {
 						g_BuyingAgentDelay = newDelay;
 					} else {
-						if (newDelay < 5200) newDelay = 5200;
-						if (newDelay > 15000) newDelay = 15000;
+						if (newDelay < 1200) newDelay = 1200;
+						if (newDelay > 2200) newDelay = 2200;
 						g_BuyingAgentDelay = newDelay;
 						puSetAttribute(delayCtrl, PUA_TEXTENTRY_VALUE, newDelay);
 					}
@@ -2997,8 +2997,8 @@ void ImportSettings( char* filename )
                 case CFG_BUYINGAGENTDELAY:
 					sscanf( Value, "%u", &Val );
 					if (Val > 0) {
-						if (Val < 5200) Val = 5200;
-						if (Val > 15000) Val = 15000;
+						if (Val < 1200) Val = 1200;
+						if (Val > 2200) Val = 2200;
 						g_BuyingAgentDelay = Val;
 					}
 					break;
@@ -3171,7 +3171,7 @@ void ExportSettings( char* filename )
 			char buf[32] = {0};
 			GetWindowTextA(hEdit, buf, sizeof(buf));
 			int val = atoi(buf);
-			if (val >= 5200 && val <= 15000)
+			if (val >= 1200 && val <= 2200)
 				delayValue = val;
 		}
 	}

@@ -1507,26 +1507,35 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List, PUU8** ppM
                                     ic->accepted++;
                                 }
                                 if (ic->accepted == ic->limit) {
-                                    PUU32 nextRecord = puDoMethod(_List, PUM_TABLE_GETNEXTRECORD, Record, 0);
-                                    puDoMethod(g_DisabledItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
-                                    puDoMethod(g_DisabledItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
-                                    puDoMethod(g_DisabledItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)pString, 0);
-                                    puDoMethod(_List, PUM_TABLE_REMRECORD, Record, 0);
-                                    
-                                    PULID listView = puGetObjectFromCollection(g_pCol, CS_ITEMWATCH_LISTVIEW);
-                                    puSetAttribute(listView, PUA_LISTVIEW_SELECTED, -1);
-                                    
-                                    PULID table = puGetAttribute(listView, PUA_LISTVIEW_TABLE);
-                                    if (table) {
-                                        puSetAttribute(listView, PUA_LISTVIEW_TABLE, 0);
-                                        puSetAttribute(listView, PUA_LISTVIEW_TABLE, table);
-                                    }
-                                    
-                                    puDoMethod(listView, PUM_CONTROL_RELAYOUT, 0, 0);
-                                    
-                                    Record = nextRecord;
-                                    continue;
-                                }
+									PUU32 nextRecord = puDoMethod(_List, PUM_TABLE_GETNEXTRECORD, Record, 0);
+									puDoMethod(g_DisabledItemWatchList, PUM_TABLE_NEWRECORD, 0, 0);
+									puDoMethod(g_DisabledItemWatchList, PUM_TABLE_ADDRECORD, 0, 0);
+									puDoMethod(g_DisabledItemWatchList, PUM_TABLE_SETFIELDVAL, (PUU32)pString, 0);
+									puDoMethod(_List, PUM_TABLE_REMRECORD, Record, 0);
+									
+									PULID listView = puGetObjectFromCollection(g_pCol, CS_ITEMWATCH_LISTVIEW);
+									puSetAttribute(listView, PUA_LISTVIEW_SELECTED, -1);
+								
+									PULID table = puGetAttribute(listView, PUA_LISTVIEW_TABLE);
+									if (table) {
+										puSetAttribute(listView, PUA_LISTVIEW_TABLE, 0);
+										puSetAttribute(listView, PUA_LISTVIEW_TABLE, table);
+									}
+									HWND hListView = (HWND)puGetAttribute(listView, PUA_WINDOW_HANDLE);
+									if (hListView && IsWindow(hListView)) {
+										InvalidateRect(hListView, NULL, TRUE);
+										UpdateWindow(hListView);
+									}
+									HWND hMain = (HWND)puGetAttribute(g_MainWin, PUA_WINDOW_HANDLE);
+									if (hMain && IsWindow(hMain)) {
+										RedrawWindow(hMain, NULL, NULL, RDW_INVALIDATE | RDW_ALLCHILDREN);
+									}
+								
+									puDoMethod(listView, PUM_CONTROL_RELAYOUT, 0, 0);
+								
+									Record = nextRecord;
+									continue;
+								}
                             } else if( ic->accepted >= ic->limit ) {
                                 Record = puDoMethod( _List, PUM_TABLE_GETNEXTRECORD, Record, 0 );
                                 continue;
