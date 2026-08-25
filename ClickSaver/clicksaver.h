@@ -6,7 +6,7 @@
 #ifndef __CLICKSAVER_H__
 #define __CLICKSAVER_H__
 
-#define CS_VERSION "1.2.5"
+#define CS_VERSION "1.2.6"
 
 #include <windows.h>
 #include "mission.h"

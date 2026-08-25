@@ -163,6 +163,17 @@ typedef struct {
 	char* key;
 } LoggedMission;
 
+void BackupLastSettings(void)
+{
+    char srcPath[MAX_PATH];
+    char dstPath[MAX_PATH];
+    sprintf(srcPath, "%s\\LastSettings.cs", g_CSDir);
+    sprintf(dstPath, "%s\\LastSettings.bak", g_CSDir);
+    if (GetFileAttributesA(srcPath) != INVALID_FILE_ATTRIBUTES) {
+        CopyFileA(srcPath, dstPath, FALSE);  // overwrite existing backup
+    }
+}
+
 static LoggedMission* g_LoggedMissions = NULL;
 static int g_LoggedMissionCount = 0;
 static int g_LoggedMissionCapacity = 0;
@@ -2253,13 +2264,13 @@ if (!LoadItemNameCache(cachePath)) {
             break;
 
         case CSAM_NEWMISSIONS:
-            if( !g_BuyingAgentCount && g_bFullscreen )
-            {
-                g_BuyingAgentCount = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENTTRIES ), PUA_TEXTENTRY_VALUE );
-            }
-            if( g_BuyingAgentCount ) {
-                if (g_bPaused) break;
-                if( PUL_GET_CB(CS_ALERTITEM_CB) && !HasActiveWatchlistItems() ) {
+			if( !g_BuyingAgentCount && g_bFullscreen )
+			{
+				g_BuyingAgentCount = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENTTRIES ), PUA_TEXTENTRY_VALUE );
+			}
+			if( g_BuyingAgentCount ) {
+				if (g_bPaused) break;
+				if( PUL_GET_CB(CS_ALERTITEM_CB) && !HasActiveWatchlistItems() ) {
 					puSetAttribute(puGetObjectFromCollection(g_pCol, CS_BA_PROGRESS), PUA_TEXT_STRING, (PUU32)"");
 					PlaySound( "notfound.wav", NULL, SND_FILENAME | SND_NODEFAULT );
 					puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BA_STATUS ), PUA_TEXT_STRING,
@@ -2269,41 +2280,41 @@ if (!LoadItemNameCache(cachePath)) {
 					EndBuyingAgent(1);
 					break;
 				}
-                
-                HWND hMainWnd = NULL;
-                if (!g_bFullscreen) {
-                    hMainWnd = (HWND)puGetAttribute(g_MainWin, PUA_WINDOW_HANDLE);
-                    if (hMainWnd) SendMessage(hMainWnd, WM_SETREDRAW, FALSE, 0);
-                }
-                pMissionData = g_CurrentPacket;
-                
-                g_bForceUIRefresh = 1;
-
-                WaitForSingleObject( g_Mutex, INFINITE );
-                g_FoundMish = 255;
-                for( g_MishNumber = 0; g_MishNumber < 5; g_MishNumber++ )
-                {
-                    if( !( pMissionData = (void*)puDoMethod( MissionControls[ g_MishNumber ], CSM_MISSION_PARSEMISSION, (PUU32)pMissionData, 0 ) ) )
-                    {
-                        break;
-                    }
-                }
-                ReleaseMutex( g_Mutex );
-                g_bForceUIRefresh = 0;
-                
-                if (hMainWnd) {
-                    SendMessage(hMainWnd, WM_SETREDRAW, TRUE, 0);
-                    InvalidateRect(hMainWnd, NULL, TRUE);
-                    UpdateWindow(hMainWnd);
-                }
-                
-                puSetAttribute( g_MainWin, PUA_WINDOW_DEFERUPDATE, TRUE );
-                puSetAttribute( g_MainWin, PUA_WINDOW_DEFERUPDATE, FALSE );
-                
-                puSetAttribute( puGetObjectFromCollection( g_pCol, CS_TABS ), PUA_REGISTER_CURRENTTAB, 0 );
-                puSetAttribute( g_MainWin, PUA_WINDOW_ICONIFIED, FALSE );
-                
-                if( g_BuyingAgentCount && !g_bPaused )
+				
+				HWND hMainWnd = NULL;
+				if (!g_bFullscreen) {
+					hMainWnd = (HWND)puGetAttribute(g_MainWin, PUA_WINDOW_HANDLE);
+					if (hMainWnd) SendMessage(hMainWnd, WM_SETREDRAW, FALSE, 0);
+				}
+				pMissionData = g_CurrentPacket;
+				
+				g_bForceUIRefresh = 1;
+		
+				WaitForSingleObject( g_Mutex, INFINITE );
+				g_FoundMish = 255;
+				for( g_MishNumber = 0; g_MishNumber < 5; g_MishNumber++ )
+				{
+					if( !( pMissionData = (void*)puDoMethod( MissionControls[ g_MishNumber ], CSM_MISSION_PARSEMISSION, (PUU32)pMissionData, 0 ) ) )
+					{
+						break;
+					}
+				}
+				ReleaseMutex( g_Mutex );
+				g_bForceUIRefresh = 0;
+				
+				if (hMainWnd) {
+					SendMessage(hMainWnd, WM_SETREDRAW, TRUE, 0);
+					InvalidateRect(hMainWnd, NULL, TRUE);
+					UpdateWindow(hMainWnd);
+				}
+				
+				puSetAttribute( g_MainWin, PUA_WINDOW_DEFERUPDATE, TRUE );
+				puSetAttribute( g_MainWin, PUA_WINDOW_DEFERUPDATE, FALSE );
+				
+				puSetAttribute( puGetObjectFromCollection( g_pCol, CS_TABS ), PUA_REGISTER_CURRENTTAB, 0 );
+				puSetAttribute( g_MainWin, PUA_WINDOW_ICONIFIED, FALSE );
+				
+				if( g_BuyingAgentCount && !g_bPaused )
 					{
 						BuyingAgent(g_BuyingAgentDelay);
 					}
@@ -2318,84 +2329,85 @@ if (!LoadItemNameCache(cachePath)) {
 						}
 						EndBuyingAgent(1);
 					}
-            }
-
-            if( !g_BuyingAgentCount )
-            {
-                pMissionData = g_CurrentPacket;
-                puSetAttribute( g_MainWin, PUA_WINDOW_DEFERUPDATE, TRUE );
-
-                WaitForSingleObject( g_Mutex, INFINITE );
-                g_FoundMish = 255;
-                for( g_MishNumber = 0; g_MishNumber < 5; g_MishNumber++ )
-                {
-                    void *pLastMissionData;
-                    pLastMissionData = pMissionData;
-                    if( !( pMissionData = (void*)puDoMethod( MissionControls[ g_MishNumber ], CSM_MISSION_PARSEMISSION, (PUU32)pMissionData, 0 ) ) )
-                    {
-                        pMissionData = pLastMissionData;
-                    }
-                }
-
-                ReleaseMutex( g_Mutex );
-
-                if( pMissionData && !g_bFullscreen )
-                {
-                    puSetAttribute( puGetObjectFromCollection( g_pCol, CS_ERROR_WINDOW ), PUA_WINDOW_OPENED, FALSE );
-                    puSetAttribute( puGetObjectFromCollection( g_pCol, CS_TABS ), PUA_REGISTER_CURRENTTAB, 0 );
-                    puSetAttribute( g_MainWin, PUA_WINDOW_ICONIFIED, FALSE );
-                }
-
-                puSetAttribute( g_MainWin, PUA_WINDOW_DEFERUPDATE, FALSE );
-
-                if( PUL_GET_CB( CS_SOUNDS_CB ) )
-                {
-                    if( g_FoundMish == 255 )
-                        PlaySound( "notfound.wav", NULL, SND_FILENAME | SND_NODEFAULT );
-                    else
-                        PlaySound( "found.wav", NULL, SND_FILENAME | SND_NODEFAULT );
-                }
-                if( PUL_GET_CB( CS_MOUSEMOVE_CB ) || g_BuyingAgentMissions )
-                {
-                    HWND AOWnd;                  
+			}
+		
+			if( !g_BuyingAgentCount )
+			{
+				pMissionData = g_CurrentPacket;
+				puSetAttribute( g_MainWin, PUA_WINDOW_DEFERUPDATE, TRUE );
+		
+				WaitForSingleObject( g_Mutex, INFINITE );
+				g_FoundMish = 255;
+				for( g_MishNumber = 0; g_MishNumber < 5; g_MishNumber++ )
+				{
+					void *pLastMissionData;
+					pLastMissionData = pMissionData;
+					if( !( pMissionData = (void*)puDoMethod( MissionControls[ g_MishNumber ], CSM_MISSION_PARSEMISSION, (PUU32)pMissionData, 0 ) ) )
+					{
+						pMissionData = pLastMissionData;
+					}
+				}
+		
+				ReleaseMutex( g_Mutex );
+		
+				if( pMissionData && !g_bFullscreen )
+				{
+					puSetAttribute( puGetObjectFromCollection( g_pCol, CS_ERROR_WINDOW ), PUA_WINDOW_OPENED, FALSE );
+					puSetAttribute( puGetObjectFromCollection( g_pCol, CS_TABS ), PUA_REGISTER_CURRENTTAB, 0 );
+					puSetAttribute( g_MainWin, PUA_WINDOW_ICONIFIED, FALSE );
+				}
+		
+				puSetAttribute( g_MainWin, PUA_WINDOW_DEFERUPDATE, FALSE );
+		
+				if( PUL_GET_CB( CS_SOUNDS_CB ) )
+				{
+					if( g_FoundMish == 255 )
+						PlaySound( "notfound.wav", NULL, SND_FILENAME | SND_NODEFAULT );
+					else
+						PlaySound( "found.wav", NULL, SND_FILENAME | SND_NODEFAULT );
+				}
+				if( PUL_GET_CB( CS_MOUSEMOVE_CB ) || g_BuyingAgentMissions )
+				{
+					HWND AOWnd;                  
 					POINT MousePos = {0, 0};
-                    LPARAM lParam;
-
-                    WriteLog( NULL );
-
-                    if( !( AOWnd = FindWindow( "Anarchy client", NULL ) ) )
-                    {
-                        DisplayErrorMessage( "Anarchy Online is not running.", TRUE );
-                        g_BuyingAgentCount = 0;
-                    }
-
-                    if( g_FoundMish != 255 && !( pAppMsg->Message == CSAM_STOPBUYINGAGENT ) )
-                    {
-                        MousePos.x = 44 + ( ( g_FoundMish % 3 ) * 58 );
-                        MousePos.y = 57 + ( ( g_FoundMish / 3 ) * 57 );
-                        lParam = MousePos.y << 16 | MousePos.x;
-
-                        ClientToScreen( AOWnd, &MousePos );
-                        SetCursorPos( MousePos.x, MousePos.y );
-
-                        SendMessage( AOWnd, WM_LBUTTONDOWN, 0, lParam );
-                        Sleep( 500 );
-                        SendMessage( AOWnd, WM_LBUTTONUP, 0, lParam );
-
-                        Sleep( 710 );
-
-                        MousePos.x = 76; MousePos.y = 321;
-                        lParam = MousePos.y << 16 | MousePos.x;
-                        ClientToScreen( AOWnd, &MousePos );
-                        SetCursorPos( MousePos.x, MousePos.y );
-                        if( g_BuyingAgentMissions )
-                        {
-                            g_BuyingAgentMissions--;
-                            
-                            int accepted = g_BuyingAgentMaxMissions - g_BuyingAgentMissions;
-                            char buf[64];
-                            sprintf( buf, "Accepted %d of %d", accepted, g_BuyingAgentMaxMissions );
-                            puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BA_ACCEPTED ), PUA_TEXT_STRING, (PUU32)buf );
+					LPARAM lParam;
+		
+					WriteLog( NULL );
+		
+					if( !( AOWnd = FindWindow( "Anarchy client", NULL ) ) )
+					{
+						DisplayErrorMessage( "Anarchy Online is not running.", TRUE );
+						g_BuyingAgentCount = 0;
+					}
+		
+					if( g_FoundMish != 255 && !( pAppMsg->Message == CSAM_STOPBUYINGAGENT ) )
+					{
+						MousePos.x = 44 + ( ( g_FoundMish % 3 ) * 58 );
+						MousePos.y = 57 + ( ( g_FoundMish / 3 ) * 57 );
+						lParam = MousePos.y << 16 | MousePos.x;
+		
+						ClientToScreen( AOWnd, &MousePos );
+						SetCursorPos( MousePos.x, MousePos.y );
+		
+						SendMessage( AOWnd, WM_LBUTTONDOWN, 0, lParam );
+						Sleep( 500 );
+						SendMessage( AOWnd, WM_LBUTTONUP, 0, lParam );
+		
+						Sleep( 710 );
+						
+						MousePos.x = 76; MousePos.y = 321;
+						lParam = MousePos.y << 16 | MousePos.x;
+						ClientToScreen( AOWnd, &MousePos );
+						SetCursorPos( MousePos.x, MousePos.y );
+		
+						if( g_BuyingAgentMissions )
+						{
+							g_BuyingAgentMissions--;
+							
+							int accepted = g_BuyingAgentMaxMissions - g_BuyingAgentMissions;
+							char buf[64];
+							sprintf( buf, "Accepted %d of %d", accepted, g_BuyingAgentMaxMissions );
+							puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BA_ACCEPTED ), PUA_TEXT_STRING, (PUU32)buf );
 							
 							char buffer[64];
 							sprintf( buffer, "Current mission: Attempt %d of %d", g_PendingAttemptNumber, g_BuyingAgentMaxTries );
@@ -2404,15 +2416,15 @@ if (!LoadItemNameCache(cachePath)) {
 							char totalBuf[64];
 							sprintf( totalBuf, "Total attempts: %d", g_TotalAttempts );
 							puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BA_TOTAL ), PUA_TEXT_STRING, (PUU32)totalBuf );
-
-                            SendMessage( AOWnd, WM_LBUTTONDOWN, 0, lParam );
-                            Sleep( 500 );
-                            SendMessage( AOWnd, WM_LBUTTONUP, 0, lParam );
-                            Sleep( 710 );
-
-                            UpdateAcceptedCountersForMission( g_FoundMish );
-                            
-                            if( PUL_GET_CB(CS_ALERTITEM_CB) && !HasActiveWatchlistItems() ) {
+		
+							SendMessage( AOWnd, WM_LBUTTONDOWN, 0, lParam );
+							Sleep( 500 );
+							SendMessage( AOWnd, WM_LBUTTONUP, 0, lParam );
+							Sleep( 710 );
+		
+							UpdateAcceptedCountersForMission( g_FoundMish );
+							
+							if( PUL_GET_CB(CS_ALERTITEM_CB) && !HasActiveWatchlistItems() ) {
 								puSetAttribute(puGetObjectFromCollection(g_pCol, CS_BA_PROGRESS), PUA_TEXT_STRING, (PUU32)"");
 								PlaySound( "notfound.wav", NULL, SND_FILENAME | SND_NODEFAULT );
 								puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BA_STATUS ), PUA_TEXT_STRING,
@@ -2422,61 +2434,80 @@ if (!LoadItemNameCache(cachePath)) {
 								EndBuyingAgent(1);
 								goto stop_buying_agent;
 							}
-
-                            if( g_BuyingAgentMissions > 0 )
+		
+							if( g_BuyingAgentMissions > 0 )
+							{
+								SendMessage( AOWnd, WM_KEYDOWN, 0x45, 0 );
+								Sleep( 500 );
+								SendMessage( AOWnd, WM_KEYUP, 0x45, 0 );
+								Sleep( 710 );
 								{
-									SendMessage( AOWnd, WM_KEYDOWN, 0x45, 0 );
-									Sleep( 500 );
-									SendMessage( AOWnd, WM_KEYUP, 0x45, 0 );
-									Sleep( 710 );
-									{
-										int easy_hard = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_SLIDER_EASY_HARD ), PUA_TEXTENTRY_VALUE );
-										int good_bad = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_SLIDER_GOOD_BAD ), PUA_TEXTENTRY_VALUE );
-										int order_chaos = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_SLIDER_ORDER_CHAOS ), PUA_TEXTENTRY_VALUE );
-										int open_hidden = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_SLIDER_OPEN_HIDDEN ), PUA_TEXTENTRY_VALUE );
-										int phys_myst = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_SLIDER_PHYS_MYST ), PUA_TEXTENTRY_VALUE );
-										int headon_stealth = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_SLIDER_HEADON_STEALTH ), PUA_TEXTENTRY_VALUE );
-										int money_xp = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_SLIDER_MONEY_XP ), PUA_TEXTENTRY_VALUE );
-										_setSliders( easy_hard, good_bad, order_chaos, open_hidden, phys_myst, headon_stealth, money_xp );
-									}
-									
-									g_bBuyingAgentActive = 1;
-									
-									PULID pauseButton = puGetObjectFromCollection( g_pCol, CS_BUYINGAGENT_PAUSEBTN );
-									if( pauseButton )
-									{
-										const char* label = g_bPaused ? "Resume" : "Pause";
-										puSetAttribute( pauseButton, PUA_TEXT_STRING, (PUU32)label );
-									}
-									PULID statusLabel = puGetObjectFromCollection( g_pCol, CS_BA_STATUS );
-									if( statusLabel )
-									{
-										const char* status = g_bPaused ? "PAUSED" : "Running...";
-										puSetAttribute( statusLabel, PUA_TEXT_STRING, (PUU32)status );
-									}
-									
-									g_bFirstRound = TRUE;
-									g_BuyingAgentCount = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENTTRIES ), PUA_TEXTENTRY_VALUE );
-									BuyingAgent(g_BuyingAgentDelay);
+									int easy_hard = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_SLIDER_EASY_HARD ), PUA_TEXTENTRY_VALUE );
+									int good_bad = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_SLIDER_GOOD_BAD ), PUA_TEXTENTRY_VALUE );
+									int order_chaos = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_SLIDER_ORDER_CHAOS ), PUA_TEXTENTRY_VALUE );
+									int open_hidden = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_SLIDER_OPEN_HIDDEN ), PUA_TEXTENTRY_VALUE );
+									int phys_myst = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_SLIDER_PHYS_MYST ), PUA_TEXTENTRY_VALUE );
+									int headon_stealth = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_SLIDER_HEADON_STEALTH ), PUA_TEXTENTRY_VALUE );
+									int money_xp = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_SLIDER_MONEY_XP ), PUA_TEXTENTRY_VALUE );
+									_setSliders( easy_hard, good_bad, order_chaos, open_hidden, phys_myst, headon_stealth, money_xp );
 								}
-								else
+								
+								g_bBuyingAgentActive = 1;
+								
+								PULID pauseButton = puGetObjectFromCollection( g_pCol, CS_BUYINGAGENT_PAUSEBTN );
+								if( pauseButton )
 								{
-									puSetAttribute(puGetObjectFromCollection(g_pCol, CS_BA_PROGRESS), PUA_TEXT_STRING, (PUU32)"");
-									PlaySound( "found.wav", NULL, SND_FILENAME | SND_NODEFAULT );
-									char statusMsg[128];
-									sprintf(statusMsg, "Completed: accepted %d missions", g_BuyingAgentMaxMissions);
-									puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BA_STATUS ), PUA_TEXT_STRING,
-													(PUU32)statusMsg );
-									
-									EndBuyingAgent(1);
-									g_BuyingAgentCount = 0;
+									const char* label = g_bPaused ? "Resume" : "Pause";
+									puSetAttribute( pauseButton, PUA_TEXT_STRING, (PUU32)label );
 								}
-                        }
-                    }
-                }
-                WriteLog( NULL );
-            }
-            break;
+								PULID statusLabel = puGetObjectFromCollection( g_pCol, CS_BA_STATUS );
+								if( statusLabel )
+								{
+									const char* status = g_bPaused ? "PAUSED" : "Running...";
+									puSetAttribute( statusLabel, PUA_TEXT_STRING, (PUU32)status );
+								}
+								
+								g_bFirstRound = TRUE;
+								g_BuyingAgentCount = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENTTRIES ), PUA_TEXTENTRY_VALUE );
+								BuyingAgent(g_BuyingAgentDelay);
+							}
+							else
+							{
+								puSetAttribute(puGetObjectFromCollection(g_pCol, CS_BA_PROGRESS), PUA_TEXT_STRING, (PUU32)"");
+								PlaySound( "found.wav", NULL, SND_FILENAME | SND_NODEFAULT );
+								char statusMsg[128];
+								sprintf(statusMsg, "Completed: accepted %d missions", g_BuyingAgentMaxMissions);
+								puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BA_STATUS ), PUA_TEXT_STRING,
+												(PUU32)statusMsg );
+								
+								EndBuyingAgent(1);
+								g_BuyingAgentCount = 0;
+							}
+						}
+						else
+						{
+							HWND hMainWnd = (HWND)puGetAttribute( g_MainWin, PUA_WINDOW_HANDLE );
+							if (g_TimerID) {
+								KillTimer(hMainWnd, TIMER_BUYINGAGENT);
+								g_TimerID = 0;
+							}
+							KillTimer(hMainWnd, TIMER_RESPONSE_WATCHDOG);
+		
+							puSetAttribute(puGetObjectFromCollection(g_pCol, CS_BA_PROGRESS), PUA_TEXT_STRING, (PUU32)"");
+							PlaySound( "found.wav", NULL, SND_FILENAME | SND_NODEFAULT );
+							puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BA_STATUS ), PUA_TEXT_STRING,
+											(PUU32)"Match selected. Ready for manual accept." );
+		
+							g_BuyingAgentCount = 0;
+							EndBuyingAgent(1);
+							break;
+						}
+					}
+					WriteLog( NULL );
+				}
+				stop_buying_agent:;
+			}
+			break;
 
         case CSAM_PRESTARTBUYINGAGENT:
             if( puGetAttribute( puGetObjectFromCollection( g_pCol, CS_BAINFO_CB ), PUA_CHECKBOX_CHECKED ) )
@@ -2682,12 +2713,12 @@ if (!LoadItemNameCache(cachePath)) {
 			}
 		
         }
-        stop_buying_agent:;
     }
     while( pAppMsg->Message != CSAM_QUIT );
 
     WriteDebug( NULL );
     SetCurrentDirectory( g_CSDir );
+	BackupLastSettings();
     ExportSettings( "LastSettings.cs" );
     CleanUp();
     return 0;

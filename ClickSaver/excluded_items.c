@@ -29,7 +29,6 @@ const char *g_excluded_items[] = {
     "TESTITEM: All Adventurer NFs",
     "Nanotechnician: Startup Crystal - Malaise of Movement",
     "Generic Innate Weapon 2",
-    "Attack of the Snake",
     "Engineer Robot Shell",
     "Engineer: Startup Crystal - Feeble Automaton",
     "Meta-Physicist: Startup Crystal - Lesser Anger Manifestation",
@@ -53,13 +52,6 @@ const char *g_excluded_items[] = {
     "Monster Dist Extra Wpn B",
     "Monster Dist Extra Wpn A",
     "Monster Dist Primary Wpn",
-    "Angel of Night",
-    "Bird of Prey",
-    "Bright, Blue, Cloudless Sky",
-    "Blessed with Thunder",
-    "Blessed With Thunder",
-    "Flower of Life",
-    "Shen",
     "Startup Crystal: Nano Crystal (Weak Health Funnel)",
     "Low Level Omni-Tek Application Form",
     "High Level Clan Application Form",
@@ -15921,4 +15913,4 @@ const char *g_excluded_items[] = {
     "Wistful Spirit of Feet Defense",
 };
 
-const unsigned int g_num_excluded_items = 15918;
+const unsigned int g_num_excluded_items = 15910;

@@ -107,7 +107,7 @@ PUU32 g_GUIDef[]=
                 PUM_ADDCHILD, PU_ACTION_OBJDEF, CS_BUYINGAGENTMISH, ( PUU32 )"TextEntry",
                     PUA_CONTROL_WEIGHT, 1,
                     PUA_TEXTENTRY_NUMERIC, TRUE,
-                    PUA_TEXTENTRY_MIN, 1,
+                    PUA_TEXTENTRY_MIN, 0,
                     PUA_TEXTENTRY_MAX, 30,
                     PUA_TEXTENTRY_BUFFERSIZE, 5,
                     PUA_TEXTENTRY_VALUE, 1,
