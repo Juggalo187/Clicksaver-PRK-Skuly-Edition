@@ -144,6 +144,20 @@ int g_BAWindowY = 100;
 void EditActiveItem(void);
 void EditDisabledItem(void);
 char g_CurrentPacket[ 65536 ];
+float g_windowScaleX = 1.0;
+float g_windowScaleY = 1.0;
+PUU16 g_missionButtonPosX = 99;
+PUU16 g_missionButtonPosY = 180;
+PUU16 g_missionOriginX = 44;
+PUU16 g_missionOriginY = 57;
+PUU16 g_missionWidth = 58;
+PUU16 g_missionHeight = 57;
+PUU16 g_sliderOriginX = 102;
+PUU16 g_sliderOriginY = 210;
+PUU16 g_difficultyPosY = 160;
+PUU16 g_sliderMinY = 64;
+PUU16 g_sliderMaxY = 141;
+PUU16 g_sliderSpacing = 18;
 
 char g_AODir[ MAX_PATH ] = { 0 };
 char g_CSDir[ MAX_PATH ] = { 0 };
@@ -2232,7 +2246,7 @@ if (!LoadItemNameCache(cachePath)) {
                 if (AOWnd)
                 {
                     SetForegroundWindow( AOWnd );
-                    POINT MousePos = { 99, 180 };
+                    POINT MousePos = { g_missionButtonPosX, g_missionButtonPosY };
                     LPARAM lParam = MousePos.y << 16 | MousePos.x;
                     if( g_bFirstRound )
                     {
@@ -2382,8 +2396,8 @@ if (!LoadItemNameCache(cachePath)) {
 		
 					if( g_FoundMish != 255 && !( pAppMsg->Message == CSAM_STOPBUYINGAGENT ) )
 					{
-						MousePos.x = 44 + ( ( g_FoundMish % 3 ) * 58 );
-						MousePos.y = 57 + ( ( g_FoundMish / 3 ) * 57 );
+						MousePos.x = g_missionOriginX + ( ( g_FoundMish % 3 ) * g_missionWidth );
+						MousePos.y = g_missionOriginY + ( ( g_FoundMish / 3 ) * g_missionHeight );
 						lParam = MousePos.y << 16 | MousePos.x;
 		
 						ClientToScreen( AOWnd, &MousePos );
@@ -2794,6 +2808,8 @@ enum
     CFG_BUYINGAGENTDELAY,
 	CFG_BAWINDOWX,
     CFG_BAWINDOWY,
+    CFG_WINDOWSCALEX,
+    CFG_WINDOWSCALEY
 };
 
 
@@ -2837,6 +2853,8 @@ struct
     { CFG_BUYINGAGENTDELAY, "BUYINGAGENTDELAY" },
 	{ CFG_BAWINDOWX, "BAWINDOWX" },
     { CFG_BAWINDOWY, "BAWINDOWY" },
+    { CFG_WINDOWSCALEX, "WINDOWSCALEX" },
+    { CFG_WINDOWSCALEY, "WINDOWSCALEY" },
     { 0, NULL }
 };
 
@@ -2852,6 +2870,7 @@ void ImportSettings( char* filename )
     PUU32 Val;
     int mode = ISM_DONE;
     char c;
+    float floatVal;
 
     Record = puDoMethod( g_LocWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0 );
     while( Record )
@@ -3033,7 +3052,30 @@ void ImportSettings( char* filename )
 						g_BuyingAgentDelay = Val;
 					}
 					break;
-					
+                case CFG_WINDOWSCALEX:
+                    sscanf( Value, "%f", &floatVal );
+                    if (floatVal > 0 && floatVal < 16) {
+                        g_windowScaleX = floatVal;
+                        g_missionButtonPosX = (int) round(floatVal * 99);
+                        g_missionOriginX = (int) round(floatVal * 44);
+                        g_missionWidth = (int) round(floatVal * 58);
+                        g_sliderOriginX = (int) round(floatVal * 102);
+                    }
+                    break;
+                case CFG_WINDOWSCALEY:
+                        sscanf( Value, "%f", &floatVal );
+                        if (floatVal > 0 && floatVal < 16) {
+                        g_windowScaleY = floatVal;
+                        g_missionButtonPosY = (int) round(floatVal * 180);
+                        g_missionOriginY = (int) round(floatVal * 57);
+                        g_missionHeight = (int) round(floatVal * 57);
+                        g_sliderOriginY = (int) round(floatVal * 210);
+                        g_difficultyPosY = (int) round(floatVal * 160);
+                        g_sliderMinY = (int) round(floatVal * 64);
+                        g_sliderMaxY = (int) round(floatVal * 141);
+                        g_sliderSpacing = (int) round(floatVal * 18);
+                    }
+                    break;
                 case CFG_ITEMVALUE:
                 {
                     PUU32 a, b, c, d;
@@ -3221,7 +3263,8 @@ void ExportSettings( char* filename )
 		}
 	}
 	fprintf(fp, "BAWINDOWX::%d\nBAWINDOWY::%d\n", g_BAWindowX, g_BAWindowY);
-	
+	fprintf(fp, "WINDOWSCALEX::%f\nWINDOWSCALEY::%f\n", g_windowScaleX, g_windowScaleY);
+
 	fprintf(fp, "EXIT_RADIUS::%d\n", g_ExitProximityRadius);
 	fprintf(fp, "EXIT_ALERT::%d\n", puGetAttribute(puGetObjectFromCollection(g_pCol, CS_ALERTEXIT_CB), PUA_CHECKBOX_CHECKED));
 	fprintf(fp, "EXIT_HIGHLIGHT::%d\n", puGetAttribute(puGetObjectFromCollection(g_pCol, CS_HIGHLIGHTEXIT_CB), PUA_CHECKBOX_CHECKED));
@@ -3735,17 +3778,17 @@ static float _linIinterp( float lo, float hi, float ratio )
 
 void _setSliders( int easy_hard, int good_bad, int order_chaos, int open_hidden, int phys_myst, int headon_stealth, int money_xp )
 {
-    int ypos = 210;
-    if( easy_hard != 50 ) _dragMouse( 102, 160, (int)_linIinterp( 64, 141, easy_hard / 100.0f ), 160 );
-    if( good_bad != 50 ) _dragMouse( 102, ypos, (int)_linIinterp( 64, 141, good_bad / 100.0f ), ypos );
-    ypos += 18;
-    if( order_chaos != 50 ) _dragMouse( 102, ypos, (int)_linIinterp( 64, 141, order_chaos / 100.0f ), ypos );
-    ypos += 18;
-    if( open_hidden != 50 ) _dragMouse( 102, ypos, (int)_linIinterp( 64, 141, open_hidden / 100.0f ), ypos );
-    ypos += 18;
-    if( phys_myst != 50 ) _dragMouse( 102, ypos, (int)_linIinterp( 64, 141, phys_myst / 100.0f ), ypos );
-    ypos += 18;
-    if( headon_stealth != 50 ) _dragMouse( 102, ypos, (int)_linIinterp( 64, 141, headon_stealth / 100.0f ), ypos );
-    ypos += 18;
-    if( money_xp != 50 ) _dragMouse( 102, ypos, (int)_linIinterp( 64, 141, money_xp / 100.0f ), ypos );
+    int ypos = g_sliderOriginY;
+    if( easy_hard != 50 ) _dragMouse(g_sliderOriginX, g_difficultyPosY, (int)_linIinterp(g_sliderMinY, g_sliderMaxY, easy_hard / 100.0f), ypos);
+    if( good_bad != 50 ) _dragMouse(g_sliderOriginX, ypos, (int)_linIinterp(g_sliderMinY, g_sliderMaxY, good_bad / 100.0f ), ypos );
+    ypos += g_sliderSpacing;
+    if( order_chaos != 50 ) _dragMouse(g_sliderOriginX, ypos, (int)_linIinterp(g_sliderMinY, g_sliderMaxY, order_chaos / 100.0f ), ypos );
+    ypos += g_sliderSpacing;
+    if( open_hidden != 50 ) _dragMouse(g_sliderOriginX, ypos, (int)_linIinterp(g_sliderMinY, g_sliderMaxY, open_hidden / 100.0f ), ypos );
+    ypos += g_sliderSpacing;
+    if( phys_myst != 50 ) _dragMouse(g_sliderOriginX, ypos, (int)_linIinterp(g_sliderMinY, g_sliderMaxY, phys_myst / 100.0f ), ypos );
+    ypos += g_sliderSpacing;
+    if( headon_stealth != 50 ) _dragMouse(g_sliderOriginX, ypos, (int)_linIinterp(g_sliderMinY, g_sliderMaxY, headon_stealth / 100.0f ), ypos );
+    ypos += g_sliderSpacing;
+    if( money_xp != 50 ) _dragMouse(g_sliderOriginX, ypos, (int)_linIinterp(g_sliderMinY, g_sliderMaxY, money_xp / 100.0f ), ypos );
 }
