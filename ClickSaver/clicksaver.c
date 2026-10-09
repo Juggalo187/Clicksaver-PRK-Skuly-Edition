@@ -144,20 +144,32 @@ int g_BAWindowY = 100;
 void EditActiveItem(void);
 void EditDisabledItem(void);
 char g_CurrentPacket[ 65536 ];
-float g_windowScaleX = 1.0;
-float g_windowScaleY = 1.0;
-PUU16 g_missionButtonPosX = 99;
-PUU16 g_missionButtonPosY = 180;
-PUU16 g_missionOriginX = 44;
-PUU16 g_missionOriginY = 57;
-PUU16 g_missionWidth = 58;
-PUU16 g_missionHeight = 57;
-PUU16 g_sliderOriginX = 102;
-PUU16 g_sliderOriginY = 210;
-PUU16 g_difficultyPosY = 160;
-PUU16 g_sliderMinY = 64;
-PUU16 g_sliderMaxY = 141;
-PUU16 g_sliderSpacing = 18;
+static CSCoordinateScale g_clientCoordinateScale = { 1.0f, 1.0f };
+
+CSCoordinateScale GetCoordinateScale(void)
+{
+    return g_clientCoordinateScale;
+}
+
+void SetCoordinateScaleX(float scale)
+{
+    if (scale > 0.0f && scale < 16.0f)
+        g_clientCoordinateScale.x = scale;
+}
+
+void SetCoordinateScaleY(float scale)
+{
+    if (scale > 0.0f && scale < 16.0f)
+        g_clientCoordinateScale.y = scale;
+}
+
+POINT ScaleClientPoint(int x, int y)
+{
+    POINT point;
+    point.x = (LONG)round(x * g_clientCoordinateScale.x);
+    point.y = (LONG)round(y * g_clientCoordinateScale.y);
+    return point;
+}
 
 char g_AODir[ MAX_PATH ] = { 0 };
 char g_CSDir[ MAX_PATH ] = { 0 };
@@ -2154,6 +2166,18 @@ if (!LoadItemNameCache(cachePath)) {
 				}
 				break;
 			}
+        case CSAM_UPDATE_COORDINATE_SCALE:
+        {
+            PUU32 scaleX = puGetAttribute(
+                puGetObjectFromCollection(g_pCol, CS_COORDINATE_SCALE_X),
+                PUA_TEXTENTRY_VALUE);
+            PUU32 scaleY = puGetAttribute(
+                puGetObjectFromCollection(g_pCol, CS_COORDINATE_SCALE_Y),
+                PUA_TEXTENTRY_VALUE);
+            SetCoordinateScaleX(scaleX / 100.0f);
+            SetCoordinateScaleY(scaleY / 100.0f);
+            break;
+        }
 			
         case CSAM_STOPBUYINGAGENT:
                 if (g_TimerID) {
@@ -2246,7 +2270,7 @@ if (!LoadItemNameCache(cachePath)) {
                 if (AOWnd)
                 {
                     SetForegroundWindow( AOWnd );
-                    POINT MousePos = { g_missionButtonPosX, g_missionButtonPosY };
+                    POINT MousePos = ScaleClientPoint( 99, 180 );
                     LPARAM lParam = MousePos.y << 16 | MousePos.x;
                     if( g_bFirstRound )
                     {
@@ -2396,8 +2420,9 @@ if (!LoadItemNameCache(cachePath)) {
 		
 					if( g_FoundMish != 255 && !( pAppMsg->Message == CSAM_STOPBUYINGAGENT ) )
 					{
-						MousePos.x = g_missionOriginX + ( ( g_FoundMish % 3 ) * g_missionWidth );
-						MousePos.y = g_missionOriginY + ( ( g_FoundMish / 3 ) * g_missionHeight );
+						MousePos = ScaleClientPoint(
+							44 + ( ( g_FoundMish % 3 ) * 58 ),
+							57 + ( ( g_FoundMish / 3 ) * 57 ) );
 						lParam = MousePos.y << 16 | MousePos.x;
 		
 						ClientToScreen( AOWnd, &MousePos );
@@ -2409,7 +2434,7 @@ if (!LoadItemNameCache(cachePath)) {
 		
 						Sleep( 710 );
 						
-						MousePos.x = 76; MousePos.y = 321;
+						MousePos = ScaleClientPoint( 76, 321 );
 						lParam = MousePos.y << 16 | MousePos.x;
 						ClientToScreen( AOWnd, &MousePos );
 						SetCursorPos( MousePos.x, MousePos.y );
@@ -3053,27 +3078,21 @@ void ImportSettings( char* filename )
 					}
 					break;
                 case CFG_WINDOWSCALEX:
-                    sscanf( Value, "%f", &floatVal );
-                    if (floatVal > 0 && floatVal < 16) {
-                        g_windowScaleX = floatVal;
-                        g_missionButtonPosX = (int) round(floatVal * 99);
-                        g_missionOriginX = (int) round(floatVal * 44);
-                        g_missionWidth = (int) round(floatVal * 58);
-                        g_sliderOriginX = (int) round(floatVal * 102);
+                    if (sscanf( Value, "%f", &floatVal ) == 1 &&
+                        floatVal > 0.0f && floatVal < 16.0f) {
+                        SetCoordinateScaleX( floatVal );
+                        puSetAttribute(
+                            puGetObjectFromCollection(g_pCol, CS_COORDINATE_SCALE_X),
+                            PUA_TEXTENTRY_VALUE, (PUU32)round(floatVal * 100.0f));
                     }
                     break;
                 case CFG_WINDOWSCALEY:
-                        sscanf( Value, "%f", &floatVal );
-                        if (floatVal > 0 && floatVal < 16) {
-                        g_windowScaleY = floatVal;
-                        g_missionButtonPosY = (int) round(floatVal * 180);
-                        g_missionOriginY = (int) round(floatVal * 57);
-                        g_missionHeight = (int) round(floatVal * 57);
-                        g_sliderOriginY = (int) round(floatVal * 210);
-                        g_difficultyPosY = (int) round(floatVal * 160);
-                        g_sliderMinY = (int) round(floatVal * 64);
-                        g_sliderMaxY = (int) round(floatVal * 141);
-                        g_sliderSpacing = (int) round(floatVal * 18);
+                    if (sscanf( Value, "%f", &floatVal ) == 1 &&
+                        floatVal > 0.0f && floatVal < 16.0f) {
+                        SetCoordinateScaleY( floatVal );
+                        puSetAttribute(
+                            puGetObjectFromCollection(g_pCol, CS_COORDINATE_SCALE_Y),
+                            PUA_TEXTENTRY_VALUE, (PUU32)round(floatVal * 100.0f));
                     }
                     break;
                 case CFG_ITEMVALUE:
@@ -3263,7 +3282,9 @@ void ExportSettings( char* filename )
 		}
 	}
 	fprintf(fp, "BAWINDOWX::%d\nBAWINDOWY::%d\n", g_BAWindowX, g_BAWindowY);
-	fprintf(fp, "WINDOWSCALEX::%f\nWINDOWSCALEY::%f\n", g_windowScaleX, g_windowScaleY);
+	CSCoordinateScale coordinateScale = GetCoordinateScale();
+	fprintf(fp, "WINDOWSCALEX::%f\nWINDOWSCALEY::%f\n",
+            coordinateScale.x, coordinateScale.y);
 
 	fprintf(fp, "EXIT_RADIUS::%d\n", g_ExitProximityRadius);
 	fprintf(fp, "EXIT_ALERT::%d\n", puGetAttribute(puGetObjectFromCollection(g_pCol, CS_ALERTEXIT_CB), PUA_CHECKBOX_CHECKED));
@@ -3466,6 +3487,7 @@ void EndBuyingAgent(int keepWindow)
 static const char* MissionTypeIdToString(PUU32 type) {
     switch (type) {
         case 0x2c4e:  return "Repair";
+        case 0x2c41:
         case 0x26add: return "Return Item";
         case 0x2c47:  return "Find Person";
         case 0x2c49:  return "Find Item";
@@ -3742,7 +3764,9 @@ void WriteDebug( const char* txt )
 
 static void _dragMouse( int x0, int y0, int x1, int y1 )
 {
-    POINT MousePos = {0, 0};
+    POINT MousePos;
+    POINT start = ScaleClientPoint( x0, y0 );
+    POINT end = ScaleClientPoint( x1, y1 );
     LPARAM lParam;
     HWND AOWnd;
 
@@ -3753,15 +3777,13 @@ static void _dragMouse( int x0, int y0, int x1, int y1 )
         g_BuyingAgentMissions = 0;
         return;
     }
-    MousePos.x = x0;
-    MousePos.y = y0;
+    MousePos = start;
     lParam = MousePos.y << 16 | MousePos.x;
     ClientToScreen( AOWnd, &MousePos );
     SetCursorPos( MousePos.x, MousePos.y );
     SendMessage( AOWnd, WM_LBUTTONDOWN, 0, lParam );
     Sleep( 250 );
-    MousePos.x = x1;
-    MousePos.y = y1;
+    MousePos = end;
     lParam = MousePos.y << 16 | MousePos.x;
     ClientToScreen( AOWnd, &MousePos );
     SetCursorPos( MousePos.x, MousePos.y );
@@ -3778,17 +3800,23 @@ static float _linIinterp( float lo, float hi, float ratio )
 
 void _setSliders( int easy_hard, int good_bad, int order_chaos, int open_hidden, int phys_myst, int headon_stealth, int money_xp )
 {
-    int ypos = g_sliderOriginY;
-    if( easy_hard != 50 ) _dragMouse(g_sliderOriginX, g_difficultyPosY, (int)_linIinterp(g_sliderMinY, g_sliderMaxY, easy_hard / 100.0f), ypos);
-    if( good_bad != 50 ) _dragMouse(g_sliderOriginX, ypos, (int)_linIinterp(g_sliderMinY, g_sliderMaxY, good_bad / 100.0f ), ypos );
-    ypos += g_sliderSpacing;
-    if( order_chaos != 50 ) _dragMouse(g_sliderOriginX, ypos, (int)_linIinterp(g_sliderMinY, g_sliderMaxY, order_chaos / 100.0f ), ypos );
-    ypos += g_sliderSpacing;
-    if( open_hidden != 50 ) _dragMouse(g_sliderOriginX, ypos, (int)_linIinterp(g_sliderMinY, g_sliderMaxY, open_hidden / 100.0f ), ypos );
-    ypos += g_sliderSpacing;
-    if( phys_myst != 50 ) _dragMouse(g_sliderOriginX, ypos, (int)_linIinterp(g_sliderMinY, g_sliderMaxY, phys_myst / 100.0f ), ypos );
-    ypos += g_sliderSpacing;
-    if( headon_stealth != 50 ) _dragMouse(g_sliderOriginX, ypos, (int)_linIinterp(g_sliderMinY, g_sliderMaxY, headon_stealth / 100.0f ), ypos );
-    ypos += g_sliderSpacing;
-    if( money_xp != 50 ) _dragMouse(g_sliderOriginX, ypos, (int)_linIinterp(g_sliderMinY, g_sliderMaxY, money_xp / 100.0f ), ypos );
+    const int sliderX = 102;
+    const int sliderOriginY = 210;
+    const int difficultyY = 160;
+    const float sliderMinY = 64.0f;
+    const float sliderMaxY = 141.0f;
+    const int sliderSpacing = 18;
+    int ypos = sliderOriginY;
+    if( easy_hard != 50 ) _dragMouse(sliderX, difficultyY, (int)_linIinterp(sliderMinY, sliderMaxY, easy_hard / 100.0f), ypos);
+    if( good_bad != 50 ) _dragMouse(sliderX, ypos, (int)_linIinterp(sliderMinY, sliderMaxY, good_bad / 100.0f ), ypos );
+    ypos += sliderSpacing;
+    if( order_chaos != 50 ) _dragMouse(sliderX, ypos, (int)_linIinterp(sliderMinY, sliderMaxY, order_chaos / 100.0f ), ypos );
+    ypos += sliderSpacing;
+    if( open_hidden != 50 ) _dragMouse(sliderX, ypos, (int)_linIinterp(sliderMinY, sliderMaxY, open_hidden / 100.0f ), ypos );
+    ypos += sliderSpacing;
+    if( phys_myst != 50 ) _dragMouse(sliderX, ypos, (int)_linIinterp(sliderMinY, sliderMaxY, phys_myst / 100.0f ), ypos );
+    ypos += sliderSpacing;
+    if( headon_stealth != 50 ) _dragMouse(sliderX, ypos, (int)_linIinterp(sliderMinY, sliderMaxY, headon_stealth / 100.0f ), ypos );
+    ypos += sliderSpacing;
+    if( money_xp != 50 ) _dragMouse(sliderX, ypos, (int)_linIinterp(sliderMinY, sliderMaxY, money_xp / 100.0f ), ypos );
 }

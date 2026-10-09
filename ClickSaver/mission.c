@@ -94,6 +94,7 @@ static int WordCount(const char* str) {
 static const char* MissionTypeToString(PUU32 type) {
     switch (type) {
         case 0x2c4e: return "Repair";
+        case 0x2c41:
         case 0x26add: return "Return Item";
         case 0x2c47: return "Find Person";
         case 0x2c49: return "Find Item";
@@ -531,7 +532,7 @@ void LogMissionDescription(PUU32 missionType, const char *findItem,
                            const PUU8* pDesc, PUU32 descLen,
                            const char *missionTitle, PUU32 mishId)
 {
-    if (!(missionType == 0x2c49 || missionType == 0x26add))
+    if (!(missionType == 0x2c49 || missionType == 0x2c41 || missionType == 0x26add))
         return;
 
     int hasItem = (findItem && findItem[0] != '\0');
@@ -565,6 +566,7 @@ void LogMissionDescription(PUU32 missionType, const char *findItem,
     const char* typeStr = "Unknown";
     switch (missionType) {
         case 0x2c4e:  typeStr = "Repair"; break;
+        case 0x2c41:
         case 0x26add: typeStr = "Return Item"; break;
         case 0x2c47:  typeStr = "Find Person"; break;
         case 0x2c49:  typeStr = "Find Item"; break;
@@ -1177,10 +1179,10 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     }
 
     // Find item extraction (may set TempStr)
-    if (TempVal == 0x2c49 || TempVal == 0x26add) {
+    if (TempVal == 0x2c49 || TempVal == 0x2c41 || TempVal == 0x26add) {
         if (MissionFind(pDesc, DescLength, TempStr)) {
             g_bIsFindItem = 1;
-            g_bIsReturnMission = (TempVal == 0x26add);
+            g_bIsReturnMission = (TempVal == 0x2c41 || TempVal == 0x26add);
             g_bRewardMatched = (PUU8)bRewardMatched;
             int found = SetAndSearch( TempStr, puGetObjectFromCollection(_pData->pCol, FINDITEM), g_ItemWatchList, NULL );
             g_bIsFindItem = 0;
@@ -1321,7 +1323,7 @@ PUU32 SetAndSearchType( PUU32 TempVal, PULID _TextEntry )
             PUA_CHECKBOX_CHECKED ) ) match = 1;
         break;
 
-    //    case 0x2c41: 
+    case 0x2c41:
     case 0x26add:
         sprintf( TempStr, "Return Item" );
         if( puGetAttribute( puGetObjectFromCollection( g_pCol, CS_TYPERETURN_CB ),

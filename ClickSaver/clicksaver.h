@@ -139,7 +139,10 @@ enum
     CS_DISABLED_ITEMWATCH_LIST,
     CS_DISABLED_ITEMWATCH_LISTVIEW,
     CS_DISABLE_BTN,
-    CS_ENABLE_BTN
+    CS_ENABLE_BTN,
+    CS_COORDINATE_SCALE_X,
+    CS_COORDINATE_SCALE_Y,
+    CS_COORDINATE_SCALE_BTN
 };
 
 enum
@@ -178,7 +181,8 @@ enum
     CSAM_REMOVE_ALL_DISABLED,
 	CSAM_IMPORT_ITEMS,
 	CSAM_EXPORT_ITEMS,
-    CSAM_REMOVE_DUPLICATE_ITEMS
+	CSAM_REMOVE_DUPLICATE_ITEMS,
+	CSAM_UPDATE_COORDINATE_SCALE
 };
 
 extern PULID g_ItemWatchList;
@@ -192,20 +196,14 @@ extern PUU8 g_MishNumber, g_FoundMish;
 extern PUU8 g_bFullscreen;
 extern PUU32 g_GUIDef[];
 extern PUU8 g_bBuyingAgentActive;
-float g_windowScaleX;
-float g_windowScaleY;
-PUU16 g_missionButtonPosX;
-PUU16 g_missionButtonPosY;
-PUU16 g_missionOriginX;
-PUU16 g_missionOriginY;
-PUU16 g_missionWidth;
-PUU16 g_missionHeight;
-PUU16 g_sliderOriginX;
-PUU16 g_sliderOriginY;
-PUU16 g_difficultyPosY;
-PUU16 g_sliderMinY;
-PUU16 g_sliderMaxY;
-PUU16 g_sliderSpacing;
+typedef struct {
+    float x;
+    float y;
+} CSCoordinateScale;
+CSCoordinateScale GetCoordinateScale(void);
+void SetCoordinateScaleX(float scale);
+void SetCoordinateScaleY(float scale);
+POINT ScaleClientPoint(int x, int y);
 void safe_strcpy(char *dest, size_t dest_size, const char *src);
 void safe_strcat(char *dest, size_t dest_size, const char *src);
 int IsWatchlistEntryValid(const char *searchStr);
