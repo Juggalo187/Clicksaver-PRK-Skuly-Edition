@@ -6,7 +6,7 @@
 #ifndef __CLICKSAVER_H__
 #define __CLICKSAVER_H__
 
-#define CS_VERSION "1.2.6"
+#define CS_VERSION "1.2.8"
 
 #include <windows.h>
 #include "mission.h"
@@ -208,7 +208,6 @@ POINT ScaleClientPoint(int x, int y);
 void safe_strcpy(char *dest, size_t dest_size, const char *src);
 void safe_strcat(char *dest, size_t dest_size, const char *src);
 int IsWatchlistEntryValid(const char *searchStr);
-int GetMatchingItems(const char *searchStr, const char ***outItems, int *outCount);
 int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, const char ***outItems, int *outCount);
 int CheckMissionNearExit(int zoneId, float x, float y);
 
