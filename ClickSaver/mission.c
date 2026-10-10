@@ -617,6 +617,26 @@ PUU8 g_bOverrideMatch = 0;
 extern PUU8 g_bUpdatingCounters;
 extern PUU8 g_bForceUIRefresh;
 
+static PUU32 GetAdjustedItemValue(PUU32 _Value)
+{
+    PUU32 buyMod = puGetAttribute(
+        puGetObjectFromCollection(g_pCol, CS_ITEMVALUE_BUYMOD),
+        PUA_TEXTENTRY_VALUE);
+    PUU32 computerLiteracy = puGetAttribute(
+        puGetObjectFromCollection(g_pCol, CS_ITEMVALUE_COMPLIT),
+        PUA_TEXTENTRY_VALUE);
+    PUU32 skillSteps = (computerLiteracy > 3000 ? 3000 : computerLiteracy) / 40;
+    unsigned long long adjustedValue =
+        (unsigned long long)_Value * buyMod * (100 + skillSteps) / 10000;
+
+    return adjustedValue > 0xffffffffULL ? 0xffffffffUL : (PUU32)adjustedValue;
+}
+
+static PUU32 AddItemValue(PUU32 _Total, PUU32 _Value)
+{
+    return _Value > 0xffffffffUL - _Total ? 0xffffffffUL : _Total + _Value;
+}
+
 PUU8 GetAODBItem( MissionItem* _pMissionItem, PUU32 _ItemKey );
 void GetMissionItem( MissionItem* _pMissionItem, PUU32 _ItemKey1, PUU32 _ItemKey2, PUU32 _QL );
 PUU8 *GetAOIconData( unsigned long lIconNo );
@@ -1152,7 +1172,7 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
         bItemNameMatch |= (flags & 1);
         bRewardMatched |= (flags & 1);
         bValueMatch |= ((flags >> 1) & 1);
-        TotalValue += _pData->Reward.Value * puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMVALUE_BUYMOD ), PUA_TEXTENTRY_VALUE ) / 100;
+        TotalValue = AddItemValue(TotalValue, GetAdjustedItemValue(_pData->Reward.Value));
     }
 
     if( !g_BuyingAgentCount || g_bForceUIRefresh )
@@ -1285,10 +1305,10 @@ PUU32 ShowItem( MissionClassData* _pData, Item* _pItem, PUU32 _ObjId, PUU32 _Val
         sprintf( TempStr, "QL%u %s", QL, _pData->Reward.pName );
         bNameMatch = SetAndSearch( TempStr, puGetObjectFromCollection( _pData->pCol, _ObjId ), g_ItemWatchList, NULL );
 
-        int itemValue = _pData->Reward.Value * puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMVALUE_BUYMOD ), PUA_TEXTENTRY_VALUE ) / 100;
+        PUU32 itemValue = GetAdjustedItemValue(_pData->Reward.Value);
         puSetAttribute( puGetObjectFromCollection( _pData->pCol, _ValID ), PUA_TEXTENTRY_VALUE, itemValue );
 
-        int singleThreshold = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMVALUE_SINGLE ), PUA_TEXTENTRY_VALUE );
+        PUU32 singleThreshold = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMVALUE_SINGLE ), PUA_TEXTENTRY_VALUE );
         if( itemValue > singleThreshold )
         {
             puSetAttribute( puGetObjectFromCollection( _pData->pCol, _ValID ), PUA_TEXTENTRY_HILIGHT, TRUE );
@@ -1964,6 +1984,7 @@ void GetMissionItem( MissionItem* _pMissionItem, PUU32 _ItemKey1, PUU32
 {
     MissionItem sItem1, sItem2;
 
+    memset(_pMissionItem, 0, sizeof(*_pMissionItem));
     _pMissionItem->QL = _QL;
     if( !_ItemKey1 )
     {
@@ -1990,8 +2011,10 @@ void GetMissionItem( MissionItem* _pMissionItem, PUU32 _ItemKey1, PUU32
 		{
 			goto FetchItemName_Err_NotFound;
 		}
-		
-		if( abs( _QL - sItem1.QL ) < abs( sItem2.QL - _QL ) )
+
+        PUU32 item1Distance = _QL > sItem1.QL ? _QL - sItem1.QL : sItem1.QL - _QL;
+        PUU32 item2Distance = _QL > sItem2.QL ? _QL - sItem2.QL : sItem2.QL - _QL;
+		if( item1Distance < item2Distance )
 		{
 			strncpy(_pMissionItem->pName, sItem1.pName, AODB_MAX_NAME_LEN);
 			_pMissionItem->pName[AODB_MAX_NAME_LEN] = '\0';
@@ -2004,21 +2027,52 @@ void GetMissionItem( MissionItem* _pMissionItem, PUU32 _ItemKey1, PUU32
 			_pMissionItem->IconKey = sItem2.IconKey;
 		}
 
-        if( ( sItem2.QL - sItem1.QL ) == 0 )
+        if( sItem1.QL == sItem2.QL )
         {
             _pMissionItem->Value = sItem1.Value;
         }
         else
         {
-            _pMissionItem->Value = sItem1.Value + ( ( sItem2.Value - sItem1.Value ) / ( sItem2.QL - sItem1.QL ) * ( _QL - sItem1.QL ) );
+            PUU32 lowQL = sItem1.QL < sItem2.QL ? sItem1.QL : sItem2.QL;
+            PUU32 highQL = sItem1.QL < sItem2.QL ? sItem2.QL : sItem1.QL;
+            PUU32 lowValue = sItem1.QL < sItem2.QL ? sItem1.Value : sItem2.Value;
+            PUU32 highValue = sItem1.QL < sItem2.QL ? sItem2.Value : sItem1.Value;
+
+            if( _QL <= lowQL )
+            {
+                _pMissionItem->Value = lowValue;
+            }
+            else if( _QL >= highQL )
+            {
+                _pMissionItem->Value = highValue;
+            }
+            else
+            {
+                // AO item Value scales with the square of the QL fraction between templates.
+                double qlFraction = (double)(_QL - lowQL) / (highQL - lowQL);
+                double interpolatedValue = lowValue +
+                    ((double)highValue - lowValue) * qlFraction * qlFraction;
+                if (interpolatedValue <= 0.0)
+                {
+                    _pMissionItem->Value = 0;
+                }
+                else if (interpolatedValue >= 4294967295.0)
+                {
+                    _pMissionItem->Value = 0xffffffffUL;
+                }
+                else
+                {
+                    _pMissionItem->Value = (PUU32)(interpolatedValue + 0.5);
+                }
+            }
         }
     }
 
     return;
 
 FetchItemName_Err_NotFound:
-    sprintf( _pMissionItem->pName, "Unknown (%X:%X)", _ItemKey1, _ItemKey2 );
-    _pMissionItem->IconKey = 0;
+    snprintf( (char*)_pMissionItem->pName, sizeof(_pMissionItem->pName),
+              "Unknown (%X:%X)", _ItemKey1, _ItemKey2 );
     return;
 }
 

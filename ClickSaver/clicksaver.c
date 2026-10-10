@@ -2834,7 +2834,8 @@ enum
 	CFG_BAWINDOWX,
     CFG_BAWINDOWY,
     CFG_WINDOWSCALEX,
-    CFG_WINDOWSCALEY
+    CFG_WINDOWSCALEY,
+    CFG_ITEMVALUECL
 };
 
 
@@ -2880,6 +2881,7 @@ struct
     { CFG_BAWINDOWY, "BAWINDOWY" },
     { CFG_WINDOWSCALEX, "WINDOWSCALEX" },
     { CFG_WINDOWSCALEY, "WINDOWSCALEY" },
+    { CFG_ITEMVALUECL, "ITEMVALUECL" },
     { 0, NULL }
 };
 
@@ -3069,6 +3071,13 @@ void ImportSettings( char* filename )
                     sscanf( Value, "%u", &Val );
                     puSetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMVALUE_BUYMOD ), PUA_TEXTENTRY_VALUE, Val );
                     break;
+                case CFG_ITEMVALUECL:
+                    if (sscanf(Value, "%u", &Val) == 1) {
+                        if (Val > 3000) Val = 3000;
+                        puSetAttribute(puGetObjectFromCollection(g_pCol, CS_ITEMVALUE_COMPLIT),
+                                       PUA_TEXTENTRY_VALUE, Val);
+                    }
+                    break;
                 case CFG_BUYINGAGENTDELAY:
 					sscanf( Value, "%u", &Val );
 					if (Val > 0) {
@@ -3254,6 +3263,7 @@ void ExportSettings( char* filename )
     fprintf( fp, "SLIDER_MONEY_XP::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_SLIDER_MONEY_XP ), PUA_TEXTENTRY_VALUE ) );
 
     fprintf( fp, "BUYMOD::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMVALUE_BUYMOD ), PUA_TEXTENTRY_VALUE ) );
+    fprintf( fp, "ITEMVALUECL::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ITEMVALUE_COMPLIT ), PUA_TEXTENTRY_VALUE ) );
 	
     PULID delayCtrl = puGetObjectFromCollection(g_pCol, CS_BUYINGAGENTDELAY_ENTRY);
 	int delayValue = g_BuyingAgentDelay;

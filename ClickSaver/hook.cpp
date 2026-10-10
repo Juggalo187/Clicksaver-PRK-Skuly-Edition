@@ -23,6 +23,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #include <stdio.h>
 #include <cmath>
+#include <climits>
 #include <string>
 #include "clicksaver.h"
 
@@ -59,6 +60,12 @@ static HMODULE GetRemoteModuleHandle(DWORD processId, const char* moduleName)
     WriteProcessMemory(hProcess, pRemoteName, moduleName, nameLen, NULL);
 
     HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
+    if (!kernel32)
+    {
+        VirtualFreeEx(hProcess, pRemoteName, 0, MEM_RELEASE);
+        CloseHandle(hProcess);
+        return NULL;
+    }
     FARPROC pGetModuleHandle = GetProcAddress(kernel32, "GetModuleHandleA");
     if (!pGetModuleHandle)
     {
@@ -83,6 +90,11 @@ static void UnloadAOHook(DWORD processId)
     if (!hProcess)
         return;
     HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
+    if (!kernel32)
+    {
+        CloseHandle(hProcess);
+        return;
+    }
     FARPROC pFreeLibrary = GetProcAddress(kernel32, "FreeLibrary");
     if (pFreeLibrary)
     {
@@ -93,12 +105,25 @@ static void UnloadAOHook(DWORD processId)
 
 std::string to_ascii_copy( std::wstring const& input )
 {
-    int len_buffer = input.length() + 1;
-    char* abuffer = (char*)malloc( len_buffer );
-    ZeroMemory( abuffer, len_buffer );
-    WideCharToMultiByte( CP_ACP, NULL, input.c_str(), input.length(), abuffer, len_buffer, NULL, NULL );
-    std::string result( abuffer );
-    free( abuffer );
+    if (input.length() > INT_MAX)
+        return std::string();
+    if (input.empty())
+        return std::string();
+
+    int inputLength = static_cast<int>(input.length());
+    int outputLength = WideCharToMultiByte(
+        CP_ACP, 0, input.c_str(), inputLength, NULL, 0, NULL, NULL);
+    if (!outputLength)
+        return std::string();
+
+    std::string result(outputLength, '\0');
+    int convertedLength = WideCharToMultiByte(
+        CP_ACP, 0, input.c_str(), inputLength,
+        &result[0], outputLength, NULL, NULL);
+    if (convertedLength != outputLength)
+        return std::string();
+
+    result.resize(convertedLength);
     return result;
 }
 
@@ -133,7 +158,18 @@ bool InjectDLL( DWORD ProcessID, std::string const& dllName )
         CloseHandle( Proc );
         return false;
     }
-    LPVOID LoadLibAddy = (LPVOID)GetProcAddress( GetModuleHandle( "kernel32.dll" ), "LoadLibraryA" );
+    HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
+    if (!kernel32)
+    {
+        CloseHandle(Proc);
+        return false;
+    }
+    LPVOID LoadLibAddy = (LPVOID)GetProcAddress(kernel32, "LoadLibraryA");
+    if (!LoadLibAddy)
+    {
+        CloseHandle(Proc);
+        return false;
+    }
     if( !CreateRemoteThread( Proc, NULL, NULL, (LPTHREAD_START_ROUTINE)LoadLibAddy, (LPVOID)RemoteString, NULL, NULL ) )
     {
         CloseHandle( Proc );
@@ -174,6 +210,8 @@ LRESULT CALLBACK HookWndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam 
         break;
     case WM_COPYDATA:
         pData = (PCOPYDATASTRUCT)lParam;
+        if (!pData || !pData->lpData || pData->cbData > sizeof(g_CurrentPacket))
+            break;
         WaitForSingleObject( g_Mutex, INFINITE );
         memset( g_CurrentPacket, 0, 65536 );
         memcpy( g_CurrentPacket, pData->lpData, pData->cbData );
