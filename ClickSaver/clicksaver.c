@@ -88,6 +88,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #define MATCH_AUTO_THRESHOLD 1
 
 static FILE* g_AcceptedLogFile = NULL;
+static int g_bForceAcceptItemsMode = 0;
 
 void ResetAcceptedMissionLog(void);
 void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId,
@@ -107,7 +108,7 @@ void FreeItemNameCache(void);
 
 void CleanUp();
 void ImportSettings( char* filename );
-void ExportSettings( char* filename );
+BOOL ExportSettings( char* filename );
 
 void DisplayErrorMessage( PUU8* _pMessage, PUU32 _bAsynchronous );
 
@@ -1663,6 +1664,34 @@ static int HasActiveWatchlistItems()
     return FALSE;
 }
 
+static int HasActiveForceAcceptItems()
+{
+    PUU32 Record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+    while (Record)
+    {
+        PUU8* pString = (PUU8*)puDoMethod(g_ItemWatchList, PUM_TABLE_GETFIELDVAL, Record, 0);
+        if (pString && *pString)
+        {
+            char itemName[256];
+            int disabled = 0, force = 0, limit = 0;
+            char exclude[256];
+            ParseDisplayString((char*)pString, itemName, sizeof(itemName),
+                               &disabled, &force, &limit, exclude, sizeof(exclude));
+            if (!disabled && force)
+            {
+                if (limit == 0)
+                    return TRUE;
+
+                ItemCounter *counter = FindItemCounter(itemName);
+                if (!counter || counter->accepted < counter->limit)
+                    return TRUE;
+            }
+        }
+        Record = puDoMethod(g_ItemWatchList, PUM_TABLE_GETNEXTRECORD, Record, 0);
+    }
+    return FALSE;
+}
+
 LRESULT CALLBACK MainWndProcHook( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData )
 {
     if (uMsg == WM_TIMER)
@@ -2166,6 +2195,24 @@ if (!LoadItemNameCache(cachePath)) {
 				}
 				break;
 			}
+		case CSAM_SAVE_SETTINGS:
+		{
+			PULID computerLiteracyCtrl = puGetObjectFromCollection(g_pCol, CS_ITEMVALUE_COMPLIT);
+			if (!computerLiteracyCtrl) {
+				ShowModalMessage(NULL, "Could not access the Computer Literacy setting.",
+					"Save Failed", MB_OK | MB_ICONERROR);
+				break;
+			}
+
+			if (SetCurrentDirectory(g_CSDir) && ExportSettings("LastSettings.cs")) {
+				ShowModalMessage(NULL, "Computer Literacy value saved to LastSettings.cs.",
+					"Settings Saved", MB_OK | MB_ICONINFORMATION);
+			} else {
+				ShowModalMessage(NULL, "Could not save settings to LastSettings.cs.",
+					"Save Failed", MB_OK | MB_ICONERROR);
+			}
+			break;
+		}
         case CSAM_UPDATE_COORDINATE_SCALE:
         {
             PUU32 scaleX = puGetAttribute(
@@ -2308,7 +2355,8 @@ if (!LoadItemNameCache(cachePath)) {
 			}
 			if( g_BuyingAgentCount ) {
 				if (g_bPaused) break;
-				if( PUL_GET_CB(CS_ALERTITEM_CB) && !HasActiveWatchlistItems() ) {
+				if( (PUL_GET_CB(CS_ALERTITEM_CB) && !HasActiveWatchlistItems()) ||
+					(g_bForceAcceptItemsMode && !HasActiveForceAcceptItems()) ) {
 					puSetAttribute(puGetObjectFromCollection(g_pCol, CS_BA_PROGRESS), PUA_TEXT_STRING, (PUU32)"");
 					PlaySound( "notfound.wav", NULL, SND_FILENAME | SND_NODEFAULT );
 					puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BA_STATUS ), PUA_TEXT_STRING,
@@ -2463,7 +2511,8 @@ if (!LoadItemNameCache(cachePath)) {
 		
 							UpdateAcceptedCountersForMission( g_FoundMish );
 							
-							if( PUL_GET_CB(CS_ALERTITEM_CB) && !HasActiveWatchlistItems() ) {
+							if( (PUL_GET_CB(CS_ALERTITEM_CB) && !HasActiveWatchlistItems()) ||
+								(g_bForceAcceptItemsMode && !HasActiveForceAcceptItems()) ) {
 								puSetAttribute(puGetObjectFromCollection(g_pCol, CS_BA_PROGRESS), PUA_TEXT_STRING, (PUU32)"");
 								PlaySound( "notfound.wav", NULL, SND_FILENAME | SND_NODEFAULT );
 								puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BA_STATUS ), PUA_TEXT_STRING,
@@ -2566,7 +2615,8 @@ if (!LoadItemNameCache(cachePath)) {
 
                 puSetAttribute( puGetObjectFromCollection( g_pCol, CS_ERROR_WINDOW ), PUA_WINDOW_OPENED, FALSE );
 
-                bWarnItem = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ALERTITEM_CB ), PUA_CHECKBOX_CHECKED );
+                bWarnItem = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ALERTITEM_CB ), PUA_CHECKBOX_CHECKED ) ||
+                    HasActiveForceAcceptItems();
                 bWarnLoc = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ALERTLOC_CB ), PUA_CHECKBOX_CHECKED );
                 bWarnType = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ALERTTYPE_CB ), PUA_CHECKBOX_CHECKED );
 
@@ -2598,6 +2648,8 @@ if (!LoadItemNameCache(cachePath)) {
 
                 if( bReadyToGo )
                 {
+                    g_bForceAcceptItemsMode =
+                        !PUL_GET_CB(CS_ALERTITEM_CB) && HasActiveForceAcceptItems();
 					StartNewAcceptedMissionSession();
                     ClearItemCounters();
                     g_bBuyingAgentActive = 1;
@@ -2697,7 +2749,8 @@ if (!LoadItemNameCache(cachePath)) {
 
             puSetAttribute( puGetObjectFromCollection( g_pCol, CS_ERROR_WINDOW ), PUA_WINDOW_OPENED, FALSE );
 
-            bWarnItem = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ALERTITEM_CB ), PUA_CHECKBOX_CHECKED );
+            bWarnItem = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ALERTITEM_CB ), PUA_CHECKBOX_CHECKED ) ||
+                HasActiveForceAcceptItems();
             bWarnLoc = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ALERTLOC_CB ), PUA_CHECKBOX_CHECKED );
             bWarnType = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ALERTTYPE_CB ), PUA_CHECKBOX_CHECKED );
 
@@ -2717,6 +2770,8 @@ if (!LoadItemNameCache(cachePath)) {
 
             if( bReadyToGo )
             {
+                g_bForceAcceptItemsMode =
+                    !PUL_GET_CB(CS_ALERTITEM_CB) && HasActiveForceAcceptItems();
                 puSetAttribute( puGetObjectFromCollection( g_pCol, CS_FULLSCREEN_WINDOW ), PUA_WINDOW_OPENED, TRUE );
                 puSetAttribute( puGetObjectFromCollection( g_pCol, CS_MAIN_WINDOW ), PUA_WINDOW_OPENED, FALSE );
                 g_bFullscreen = 1;
@@ -3198,7 +3253,7 @@ void ImportSettings( char* filename )
     fclose( fp );
 }
 
-void ExportSettings( char* filename )
+BOOL ExportSettings( char* filename )
 {
     FILE* fp;
     pusRect Rect = {0};
@@ -3209,7 +3264,7 @@ void ExportSettings( char* filename )
     size_t myfilename_size = strlen(filename) + 5;
 
     myfilename = malloc(myfilename_size);
-    if (!myfilename) return;
+    if (!myfilename) return FALSE;
 
     safe_strcpy(myfilename, myfilename_size, filename);
     if( !strstr( myfilename, ".cs" ) ) safe_strcat(myfilename, myfilename_size, ".cs" );
@@ -3217,7 +3272,7 @@ void ExportSettings( char* filename )
     if( !( fp = fopen( myfilename, "w" ) ) )
     {
         free( myfilename );
-        return;
+        return FALSE;
     }
     free( myfilename );
     fprintf( fp, "::Config::\n" );
@@ -3359,7 +3414,7 @@ void ExportSettings( char* filename )
         Record = puDoMethod( g_LocWatchList, PUM_TABLE_GETNEXTRECORD, Record, 0 );
     }
     fprintf( fp, "::END::\n" );
-    fclose( fp );
+    return fclose( fp ) == 0;
 }
 
 void DisplayErrorMessage( PUU8* _pMessage, PUU32 _bAsynchronous )
@@ -3461,6 +3516,7 @@ void EndBuyingAgent(int keepWindow)
 {
     g_bPaused = 0;
 	g_bBuyingAgentActive = 0; 
+    g_bForceAcceptItemsMode = 0;
     ClearItemCounters();
 
     if (!g_bFullscreen)

@@ -76,13 +76,17 @@ PUU32 puTextEntryClassHandler( PULID _Object, PULID _Class, void* _pData, PUU32 
 		case PUM_CONTROL_CALCMINMAX:
 			{
 				pusRect Rect;
+				PUU32 MinWidth;
 				
 				Rect.Width = Rect.Height = 0;
 
 				puTextSize( _Param1, " ", 0, &Rect );
 
 				/* Min width */
-				puSetAttribute( _Object, PUA_CONTROL_MINWIDTH, 40 );
+				MinWidth = puGetAttribute( _Object, PUA_CONTROL_MINWIDTH );
+				if( MinWidth < 40 )
+					MinWidth = 40;
+				puSetAttribute( _Object, PUA_CONTROL_MINWIDTH, MinWidth );
 
 				/* No max width */
 				puSetAttribute( _Object, PUA_CONTROL_MAXWIDTH, 0 );
