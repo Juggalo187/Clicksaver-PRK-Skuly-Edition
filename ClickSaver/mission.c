@@ -1023,6 +1023,7 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     Item* pTmpItem;
     PUU32 NumItems = 0, i;
     pusObjectCollection* pPrevCol;
+    CSAcceptedMission acceptedMission = { 0 };
     CharKey[0] = '\0';
 
     pEndMissionData = _pMissionData + 65536 - 4;
@@ -1051,6 +1052,7 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     } while( TempVal != 0xdac3 );
     CHECK_BOUNDS(_pMissionData, 0x04 + 4);
     MishID = EndianSwap32( *(PUU32*)(_pMissionData + 0x04) );
+    acceptedMission.missionId = MishID;
     _pMissionData += 6 * 4;
     CHECK_BOUNDS(_pMissionData, 0);
 	
@@ -1106,6 +1108,9 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
 
     CHECK_BOUNDS(_pMissionData, 0xc + 4);
     MishQL = EndianSwap32( *(PUU32*)(_pMissionData + 0xc) );
+    acceptedMission.missionQL = MishQL;
+    acceptedMission.cash = Cash;
+    acceptedMission.xp = XP;
 
     pPrevCol = _pData->pCol;
     if( NumItems < 2 ) _pData->pCol = _pData->pSingleCol;
@@ -1131,6 +1136,11 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     TempVal = EndianSwap32( *(PUU32*)(_pMissionData + 0xbc) );
     *(PUU32*)(&CoordY) = TempVal;
     snprintf(TempStr, sizeof(TempStr), "%s (%.1f, %.1f)", PFName, CoordX, CoordY);
+    acceptedMission.zoneId = MishPF;
+    acceptedMission.x = CoordX;
+    acceptedMission.y = CoordY;
+    snprintf(acceptedMission.title, sizeof(acceptedMission.title), "%s", missionTitle);
+    snprintf(acceptedMission.playfield, sizeof(acceptedMission.playfield), "%s", PFName);
 
     // Extract the raw playfield name from TempStr (before the first '(')
     char rawPFName[256];
@@ -1165,14 +1175,25 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
 
     CHECK_BOUNDS(_pMissionData, 0x28 + 4);
     TempVal = EndianSwap32( *(PUU32*)(_pMissionData + 0x28) );
+    acceptedMission.missionTypeId = TempVal;
     bTypeFound = SetAndSearchType( TempVal, puGetObjectFromCollection( _pData->pCol, MISHTYPE ) );
 
     for( i = 0; i < NumItems; i++ ) {
-        PUU32 flags = ShowItem( _pData, pItem++, i + ITEM1, i + ITEMVAL1 );
+        Item* currentItem = pItem++;
+        PUU32 flags = ShowItem( _pData, currentItem, i + ITEM1, i + ITEMVAL1 );
         bItemNameMatch |= (flags & 1);
         bRewardMatched |= (flags & 1);
         bValueMatch |= ((flags >> 1) & 1);
         TotalValue = AddItemValue(TotalValue, GetAdjustedItemValue(_pData->Reward.Value));
+        if (i < CS_ACCEPTED_MISSION_MAX_ITEMS &&
+            !(EndianSwap32(currentItem->Key1) == 0x6af2 &&
+              EndianSwap32(currentItem->Key2) == 0x6af3) &&
+            _pData->Reward.pName && _pData->Reward.pName[0]) {
+            CSAcceptedMissionItem* reward = &acceptedMission.rewards[acceptedMission.rewardCount++];
+            snprintf(reward->name, sizeof(reward->name), "%s", _pData->Reward.pName);
+            reward->ql = EndianSwap32(currentItem->QL);
+            reward->value = GetAdjustedItemValue(_pData->Reward.Value);
+        }
     }
 
     if( !g_BuyingAgentCount || g_bForceUIRefresh )
@@ -1201,6 +1222,7 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     // Find item extraction (may set TempStr)
     if (TempVal == 0x2c49 || TempVal == 0x2c41 || TempVal == 0x26add) {
         if (MissionFind(pDesc, DescLength, TempStr)) {
+            snprintf(acceptedMission.findItem, sizeof(acceptedMission.findItem), "%s", TempStr);
             g_bIsFindItem = 1;
             g_bIsReturnMission = (TempVal == 0x2c41 || TempVal == 0x26add);
             g_bRewardMatched = (PUU8)bRewardMatched;
@@ -1255,10 +1277,15 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
         int wasFirst = (g_FoundMish == 255);
         if( wasFirst ) g_FoundMish = g_MishNumber;
         
-        // Only log if this is the first accepted mission in this packet
+        // AOHook later confirms whether this matching offer enters AO's mission list.
         if (wasFirst) {
-            LogAcceptedMission(MishPF, CoordX, CoordY, TempVal, TempStr, MishID, missionTitle,
-                   matchedLoc, matchedExit, acceptByLocation, acceptByExit, rawPFName);
+            if (matchedLoc)
+                snprintf(acceptedMission.matchedLocation, sizeof(acceptedMission.matchedLocation), "%s", matchedLoc);
+            if (matchedExit)
+                snprintf(acceptedMission.matchedExit, sizeof(acceptedMission.matchedExit), "%s", matchedExit);
+            acceptedMission.useLocation = acceptByLocation;
+            acceptedMission.useExit = acceptByExit;
+            LogAcceptedMission(&acceptedMission);
         }
         
         if( g_BuyingAgentCount ) {

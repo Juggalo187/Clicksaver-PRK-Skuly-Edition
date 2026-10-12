@@ -24,7 +24,54 @@ extern PUU8 g_bUpdatingCounters;
 void WriteLog( const char* Format, ... ) PRINTF_ATTR(1,2);
 void WriteDebug( const char* txt ) PRINTF_ATTR(1,2);
 void EndBuyingAgent(int keepWindow);
-void StartNewAcceptedMissionSession(void);
+
+#define CS_ACCEPTED_MISSION_MAX_ITEMS 6
+#define CS_ACCEPTED_MISSION_TITLE_SIZE 256
+#define CS_ACCEPTED_MISSION_LOCATION_SIZE 256
+#define CS_ACCEPTED_MISSION_FIND_SIZE 256
+#define CS_ACCEPTED_MISSION_SYNC_COPYDATA 0x314D5343UL
+#define CS_ACCEPTED_MISSION_SYNC_MAX 128
+#define IDC_ACCEPTED_MISSION_LIST 300
+#define IDC_ACCEPTED_MISSION_DETAILS 301
+#define IDC_ACCEPTED_MISSION_REMOVE 302
+#define IDC_ACCEPTED_MISSION_WAYPOINT 303
+#define IDC_ACCEPTED_MISSION_CLOSE 304
+
+typedef struct {
+    char name[128];
+    PUU32 ql;
+    PUU32 value;
+} CSAcceptedMissionItem;
+
+typedef struct {
+    PUU32 missionId;
+    PUU32 missionTypeId;
+    PUU32 zoneId;
+    PUU32 missionQL;
+    PUU32 xp;
+    PUU32 cash;
+    float x;
+    float y;
+    char title[CS_ACCEPTED_MISSION_TITLE_SIZE];
+    char playfield[CS_ACCEPTED_MISSION_LOCATION_SIZE];
+    char findItem[CS_ACCEPTED_MISSION_FIND_SIZE];
+    char matchedLocation[CS_ACCEPTED_MISSION_LOCATION_SIZE];
+    char matchedExit[CS_ACCEPTED_MISSION_LOCATION_SIZE];
+    int useLocation;
+    int useExit;
+    PUU32 rewardCount;
+    CSAcceptedMissionItem rewards[CS_ACCEPTED_MISSION_MAX_ITEMS];
+} CSAcceptedMission;
+
+void ShowAcceptedMissionsWindow(void);
+void LogAcceptedMission(const CSAcceptedMission* mission);
+#ifdef __cplusplus
+extern "C" {
+#endif
+BOOL ReceiveAcceptedMissionSnapshot(const void* data, PUU32 size);
+#ifdef __cplusplus
+}
+#endif
 
 #define AODB_TYP_ITEM       1000020
 #define AODB_TYP_ICON       1010008
@@ -185,7 +232,9 @@ enum
 	CSAM_EXPORT_ITEMS,
 	CSAM_REMOVE_DUPLICATE_ITEMS,
 	CSAM_UPDATE_COORDINATE_SCALE,
-	CSAM_SAVE_SETTINGS
+	CSAM_SAVE_SETTINGS,
+	CSAM_SHOW_ACCEPTED_MISSIONS,
+	CSAM_SYNC_ACCEPTED_MISSIONS
 };
 
 extern PULID g_ItemWatchList;
@@ -226,9 +275,4 @@ void DebugPacket( void* pData, unsigned int length );
 void WriteLog( const char* Format, ... );
 void WriteDebug( const char* txt );
 const char* GetMatchedExitName(int zoneId, float x, float y);
-void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId,
-                        const char* findItem, PUU32 mishId, const char* missionTitle,
-                        const char* matchedLocation, const char* matchedExit,
-                        int useLocation, int useExit, const char* rawPFName);
-
 #endif

@@ -87,15 +87,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #define MATCH_AUTO_THRESHOLD 1
 
-static FILE* g_AcceptedLogFile = NULL;
 static int g_bForceAcceptItemsMode = 0;
 
-void ResetAcceptedMissionLog(void);
-void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId,
-                        const char* findItem, PUU32 mishId, const char* missionTitle,
-                        const char* matchedLocation, const char* matchedExit,
-                        int useLocation, int useExit, const char* rawPFName);
-void CloseAcceptedMissionLog(void);
+void CloseAcceptedMissions(void);
 
 sqlite3*      g_pSQLite = NULL;
 sqlite3_stmt* g_stmtItem = NULL;
@@ -142,6 +136,8 @@ PUU8 g_bForceUIRefresh = 0;
 PUU8 g_bPaused = 0;
 int g_BAWindowX = 300;
 int g_BAWindowY = 100;
+static int g_AcceptedMissionWindowX = 160;
+static int g_AcceptedMissionWindowY = 100;
 void EditActiveItem(void);
 void EditDisabledItem(void);
 char g_CurrentPacket[ 65536 ];
@@ -187,8 +183,40 @@ static HBRUSH g_hButtonBgBrush = NULL;
 typedef struct {
     char* header;
     char* line;
-	char* key;
+    char* key;
+    CSAcceptedMission mission;
+    int manuallyRemoved;
+    int confirmedActive;
+    int locationCollapsed;
 } LoggedMission;
+
+typedef struct {
+    char location[CS_ACCEPTED_MISSION_LOCATION_SIZE];
+    int missionIndex;
+} AcceptedMissionSortEntry;
+
+typedef struct {
+    char location[CS_ACCEPTED_MISSION_LOCATION_SIZE];
+    int collapsed;
+    int missionCount;
+} AcceptedMissionGroupView;
+
+typedef struct {
+    char header[CS_ACCEPTED_MISSION_LOCATION_SIZE];
+    char line[1024];
+    char key[512];
+    CSAcceptedMission mission;
+    DWORD manuallyRemoved;
+} PersistedAcceptedMission;
+
+typedef struct {
+    char signature[8];
+    DWORD version;
+    DWORD count;
+} PersistedAcceptedMissionHeader;
+
+#define CS_ACCEPTED_MISSION_STORE_VERSION 1
+#define CS_ACCEPTED_MISSION_STORE_MAX 10000
 
 void BackupLastSettings(void)
 {
@@ -204,6 +232,25 @@ void BackupLastSettings(void)
 static LoggedMission* g_LoggedMissions = NULL;
 static int g_LoggedMissionCount = 0;
 static int g_LoggedMissionCapacity = 0;
+static PUU32 g_AcceptedMissionSnapshot[CS_ACCEPTED_MISSION_SYNC_MAX];
+static PUU32 g_AcceptedMissionSnapshotCount = 0;
+static int g_bAcceptedMissionSnapshotReceived = 0;
+static HWND g_hAcceptedMissionsWindow = NULL;
+static HWND g_hAcceptedMissionList = NULL;
+static HWND g_hAcceptedMissionDetails = NULL;
+static AcceptedMissionGroupView* g_AcceptedMissionGroupViews = NULL;
+static int g_AcceptedMissionGroupViewCount = 0;
+
+static LRESULT CALLBACK AcceptedMissionsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+static LRESULT CALLBACK AcceptedMissionListWndProc(HWND hWnd, UINT msg,
+    WPARAM wParam, LPARAM lParam, UINT_PTR subclassId, DWORD_PTR refData);
+static void RefreshAcceptedMissionsWindow(void);
+static void ApplyAcceptedMissionSnapshot(void);
+static void ClearAcceptedMissionBuffer(void);
+static BOOL LoadAcceptedMissionStore(void);
+static BOOL SaveAcceptedMissionStore(void);
+static const char* GetAcceptedMissionLocation(const CSAcceptedMission* mission);
+static void ToggleAcceptedMissionGroup(int groupIndex);
 
 static char*  g_LastPrintedHeader = NULL;
 
@@ -305,7 +352,6 @@ static int IsMissionNearCheckedExit(int zoneId, float mx, float my, int radius)
     }
     return 0;
 }
-
 int CheckMissionNearExit(int zoneId, float x, float y)
 {
     return IsMissionNearCheckedExit(zoneId, x, y, g_ExitProximityRadius);
@@ -1882,7 +1928,7 @@ int main( int argc, char** argv )
 
     ImportSettings( "LastSettings.cs" );
 	
-	ResetAcceptedMissionLog();
+	LoadAcceptedMissionStore();
 	
 	PULID delayCtrl = puGetObjectFromCollection(g_pCol, CS_BUYINGAGENTDELAY_ENTRY);
 	if (delayCtrl) puSetAttribute(delayCtrl, PUA_TEXTENTRY_VALUE, g_BuyingAgentDelay);
@@ -2204,15 +2250,18 @@ if (!LoadItemNameCache(cachePath)) {
 				break;
 			}
 
-			if (SetCurrentDirectory(g_CSDir) && ExportSettings("LastSettings.cs")) {
-				ShowModalMessage(NULL, "Computer Literacy value saved to LastSettings.cs.",
-					"Settings Saved", MB_OK | MB_ICONINFORMATION);
-			} else {
+			if (!SetCurrentDirectory(g_CSDir) || !ExportSettings("LastSettings.cs")) {
 				ShowModalMessage(NULL, "Could not save settings to LastSettings.cs.",
 					"Save Failed", MB_OK | MB_ICONERROR);
 			}
 			break;
 		}
+        case CSAM_SHOW_ACCEPTED_MISSIONS:
+            ShowAcceptedMissionsWindow();
+            break;
+        case CSAM_SYNC_ACCEPTED_MISSIONS:
+            ApplyAcceptedMissionSnapshot();
+            break;
         case CSAM_UPDATE_COORDINATE_SCALE:
         {
             PUU32 scaleX = puGetAttribute(
@@ -2650,7 +2699,6 @@ if (!LoadItemNameCache(cachePath)) {
                 {
                     g_bForceAcceptItemsMode =
                         !PUL_GET_CB(CS_ALERTITEM_CB) && HasActiveForceAcceptItems();
-					StartNewAcceptedMissionSession();
                     ClearItemCounters();
                     g_bBuyingAgentActive = 1;
 					g_bPaused = 0; 
@@ -2830,6 +2878,8 @@ void CleanUp()
         CloseHandle(g_Thread);
     }
 
+	CloseAcceptedMissions();
+
     if( g_Mutex != INVALID_HANDLE_VALUE )
     {
         CloseHandle( g_Mutex );
@@ -2847,7 +2897,6 @@ void CleanUp()
 	ReleaseAODatabase();
 	FreeDialogColors();
 
-	CloseAcceptedMissionLog();
     puDeleteObjectCollection( g_pCol );
     puClear();
 	FreeItemNameCache();
@@ -2890,7 +2939,9 @@ enum
     CFG_BAWINDOWY,
     CFG_WINDOWSCALEX,
     CFG_WINDOWSCALEY,
-    CFG_ITEMVALUECL
+    CFG_ITEMVALUECL,
+    CFG_ACCEPTEDMISSIONWINDOWX,
+    CFG_ACCEPTEDMISSIONWINDOWY
 };
 
 
@@ -2937,6 +2988,8 @@ struct
     { CFG_WINDOWSCALEX, "WINDOWSCALEX" },
     { CFG_WINDOWSCALEY, "WINDOWSCALEY" },
     { CFG_ITEMVALUECL, "ITEMVALUECL" },
+    { CFG_ACCEPTEDMISSIONWINDOWX, "ACCEPTEDMISSIONWINDOWX" },
+    { CFG_ACCEPTEDMISSIONWINDOWY, "ACCEPTEDMISSIONWINDOWY" },
     { 0, NULL }
 };
 
@@ -3042,6 +3095,16 @@ void ImportSettings( char* filename )
 						puSetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENT_WINDOW ), PUA_WINDOW_YPOS, g_BAWindowY );
 					}
 					break;
+                case CFG_ACCEPTEDMISSIONWINDOWX:
+                    if (sscanf(Value, "%d", &iVal) == 1 &&
+                        iVal >= -10000 && iVal <= 10000)
+                        g_AcceptedMissionWindowX = iVal;
+                    break;
+                case CFG_ACCEPTEDMISSIONWINDOWY:
+                    if (sscanf(Value, "%d", &iVal) == 1 &&
+                        iVal >= -10000 && iVal <= 10000)
+                        g_AcceptedMissionWindowY = iVal;
+                    break;
                 case CFG_WINDOWWIDTH:
                     sscanf( Value, "%u", &Val );
                     puSetAttribute( g_MainWin, PUA_WINDOW_WIDTH, Val );
@@ -3347,6 +3410,17 @@ BOOL ExportSettings( char* filename )
 		}
 	}
 	fprintf(fp, "BAWINDOWX::%d\nBAWINDOWY::%d\n", g_BAWindowX, g_BAWindowY);
+	if (g_hAcceptedMissionsWindow && IsWindow(g_hAcceptedMissionsWindow))
+	{
+		RECT r;
+		if (GetWindowRect(g_hAcceptedMissionsWindow, &r))
+		{
+			g_AcceptedMissionWindowX = r.left;
+			g_AcceptedMissionWindowY = r.top;
+		}
+	}
+	fprintf(fp, "ACCEPTEDMISSIONWINDOWX::%d\nACCEPTEDMISSIONWINDOWY::%d\n",
+		g_AcceptedMissionWindowX, g_AcceptedMissionWindowY);
 	CSCoordinateScale coordinateScale = GetCoordinateScale();
 	fprintf(fp, "WINDOWSCALEX::%f\nWINDOWSCALEY::%f\n",
             coordinateScale.x, coordinateScale.y);
@@ -3574,176 +3648,964 @@ static void GetPlayfieldName(int zoneId, char* buf, size_t bufSize) {
     }
 }
 
-static void FlushAcceptedMissionLog(void) {
-    if (!g_AcceptedLogFile || g_LoggedMissionCount == 0) return;
-
-    // Collect unique headers in order of first appearance
-    char** headers = NULL;
-    int headerCount = 0;
-    int headerCapacity = 0;
-
-    for (int i = 0; i < g_LoggedMissionCount; i++) {
-        int found = 0;
-        for (int j = 0; j < headerCount; j++) {
-            if (strcmp(g_LoggedMissions[i].header, headers[j]) == 0) {
-                found = 1;
-                break;
-            }
-        }
-        if (!found) {
-            if (headerCount >= headerCapacity) {
-                headerCapacity = headerCapacity ? headerCapacity * 2 : 8;
-                headers = realloc(headers, headerCapacity * sizeof(char*));
-            }
-            headers[headerCount++] = g_LoggedMissions[i].header;
-        }
-    }
-
-    // Write each header followed by all its missions
-    for (int h = 0; h < headerCount; h++) {
-        fprintf(g_AcceptedLogFile, "\n[%s]\n", headers[h]);
-        for (int i = 0; i < g_LoggedMissionCount; i++) {
-            if (strcmp(g_LoggedMissions[i].header, headers[h]) == 0) {
-                fprintf(g_AcceptedLogFile, "%s\n", g_LoggedMissions[i].line);
-            }
-        }
-    }
-
-    free(headers);
-    fflush(g_AcceptedLogFile);
+static void SetAcceptedControlFont(HWND control)
+{
+    if (control)
+        SendMessage(control, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
 }
 
-void ResetAcceptedMissionLog(void) {
-    if (g_AcceptedLogFile) {
-        FlushAcceptedMissionLog();
-        fclose(g_AcceptedLogFile);
-        g_AcceptedLogFile = NULL;
-    }
+static const char* GetAcceptedMissionLocation(const CSAcceptedMission* mission)
+{
+    if (mission->useLocation && mission->matchedLocation[0])
+        return mission->matchedLocation;
+    if (mission->useExit && mission->matchedExit[0])
+        return mission->matchedExit;
+    return mission->playfield[0] ? mission->playfield : "Unknown location";
+}
 
-    WaitForSingleObject(g_Mutex, INFINITE);
+static int CompareAcceptedMissionSortEntries(const void* left, const void* right)
+{
+    const AcceptedMissionSortEntry* a = (const AcceptedMissionSortEntry*)left;
+    const AcceptedMissionSortEntry* b = (const AcceptedMissionSortEntry*)right;
+    int comparison = _stricmp(a->location, b->location);
+    if (comparison)
+        return comparison;
+
+    const char* aTitle = g_LoggedMissions[a->missionIndex].mission.title;
+    const char* bTitle = g_LoggedMissions[b->missionIndex].mission.title;
+    comparison = _stricmp(aTitle, bTitle);
+    if (comparison)
+        return comparison;
+    return (a->missionIndex > b->missionIndex) - (a->missionIndex < b->missionIndex);
+}
+
+static void ToggleAcceptedMissionGroup(int groupIndex)
+{
+    if (groupIndex < 0 || groupIndex >= g_AcceptedMissionGroupViewCount)
+        return;
+
+    const char* location = g_AcceptedMissionGroupViews[groupIndex].location;
+    int collapsed = !g_AcceptedMissionGroupViews[groupIndex].collapsed;
 
     for (int i = 0; i < g_LoggedMissionCount; i++) {
-        free(g_LoggedMissions[i].header);
-        free(g_LoggedMissions[i].line);
-		free(g_LoggedMissions[i].key);
+        if (_stricmp(GetAcceptedMissionLocation(&g_LoggedMissions[i].mission), location) == 0)
+            g_LoggedMissions[i].locationCollapsed = collapsed;
     }
-    free(g_LoggedMissions);
-    g_LoggedMissions = NULL;
-    g_LoggedMissionCount = 0;
-    g_LoggedMissionCapacity = 0;
+    RefreshAcceptedMissionsWindow();
+}
 
-    ReleaseMutex(g_Mutex);
+static LRESULT CALLBACK AcceptedMissionListWndProc(HWND hWnd, UINT msg,
+    WPARAM wParam, LPARAM lParam, UINT_PTR subclassId, DWORD_PTR refData)
+{
+    (void)subclassId;
+    (void)refData;
+    LRESULT result = DefSubclassProc(hWnd, msg, wParam, lParam);
+    if (msg == WM_LBUTTONUP || (msg == WM_KEYUP &&
+        (wParam == VK_SPACE || wParam == VK_RETURN))) {
+        int row = (int)SendMessage(hWnd, LB_GETCURSEL, 0, 0);
+        if (row != LB_ERR) {
+            int itemData = (int)SendMessage(hWnd, LB_GETITEMDATA, row, 0);
+            if (itemData < 0)
+                ToggleAcceptedMissionGroup(-itemData - 1);
+        }
+    }
+    return result;
+}
 
-    g_AcceptedLogFile = fopen("AcceptedMissions.txt", "a");
-    if (!g_AcceptedLogFile) {
-        DisplayErrorMessage("Could not open AcceptedMissions.txt for writing.", TRUE);
+static void ShowAcceptedMissionDetails(int index)
+{
+    char details[4096];
+    char* cursor = details;
+    size_t remaining = sizeof(details);
+    CSAcceptedMission* mission;
+
+    if (!g_hAcceptedMissionDetails || index < 0 || index >= g_LoggedMissionCount)
+        return;
+
+    mission = &g_LoggedMissions[index].mission;
+    cursor += snprintf(cursor, remaining,
+        "Title: %s\r\nType: %s\r\nMission ID: %u\r\n"
+        "Location: %s (zone %u)\r\nCoordinates: %.1f, %.1f\r\n"
+        "Mission QL: %u\r\nCash: %u\r\nXP: %u\r\n",
+        mission->title[0] ? mission->title : "(untitled)",
+        MissionTypeIdToString(mission->missionTypeId),
+        mission->missionId,
+        mission->playfield[0] ? mission->playfield : "(unknown)",
+        mission->zoneId, mission->x, mission->y,
+        mission->missionQL, mission->cash, mission->xp);
+    remaining = sizeof(details) - (size_t)(cursor - details);
+
+    if (mission->findItem[0] && remaining > 0) {
+        cursor += snprintf(cursor, remaining, "Find item: %s\r\n", mission->findItem);
+        remaining = sizeof(details) - (size_t)(cursor - details);
+    }
+    if (mission->useLocation && mission->matchedLocation[0] && remaining > 0) {
+        cursor += snprintf(cursor, remaining, "Matched location: %s\r\n",
+            mission->matchedLocation);
+        remaining = sizeof(details) - (size_t)(cursor - details);
+    }
+    if (mission->useExit && mission->matchedExit[0] && remaining > 0) {
+        cursor += snprintf(cursor, remaining, "Matched exit: %s\r\n", mission->matchedExit);
+        remaining = sizeof(details) - (size_t)(cursor - details);
+    }
+
+    if (remaining > 0)
+        cursor += snprintf(cursor, remaining, "\r\nReward items:\r\n");
+    remaining = sizeof(details) - (size_t)(cursor - details);
+    for (PUU32 i = 0; i < mission->rewardCount && remaining > 0; i++) {
+        CSAcceptedMissionItem* reward = &mission->rewards[i];
+        cursor += snprintf(cursor, remaining, "  QL%u %s - value %u\r\n",
+            reward->ql, reward->name, reward->value);
+        remaining = sizeof(details) - (size_t)(cursor - details);
+    }
+    if (mission->rewardCount == 0 && remaining > 0)
+        cursor += snprintf(cursor, remaining, "  (No reward item)\r\n");
+    remaining = sizeof(details) - (size_t)(cursor - details);
+    if (remaining > 0)
+        snprintf(cursor, remaining,
+            "\r\nRemove this entry manually when it is no longer in AO's mission list.");
+
+    SetWindowTextA(g_hAcceptedMissionDetails, details);
+}
+
+static void RefreshAcceptedMissionsWindow(void)
+{
+    AcceptedMissionSortEntry* entries = NULL;
+    AcceptedMissionGroupView* groupViews = NULL;
+    int entryCount = 0;
+    int groupCount = 0;
+    int selectedData = 0;
+    int firstMissionData = 0;
+    int firstGroupData = 0;
+    char selectedGroup[CS_ACCEPTED_MISSION_LOCATION_SIZE] = "";
+
+    if (!g_hAcceptedMissionList)
+        return;
+
+    int selectedRow = (int)SendMessage(g_hAcceptedMissionList, LB_GETCURSEL, 0, 0);
+    if (selectedRow != LB_ERR) {
+        selectedData = (int)SendMessage(g_hAcceptedMissionList, LB_GETITEMDATA,
+            (WPARAM)selectedRow, 0);
+        if (selectedData < 0) {
+            int oldGroupIndex = -selectedData - 1;
+            if (oldGroupIndex >= 0 && oldGroupIndex < g_AcceptedMissionGroupViewCount)
+                snprintf(selectedGroup, sizeof(selectedGroup), "%s",
+                    g_AcceptedMissionGroupViews[oldGroupIndex].location);
+        }
+    }
+
+    entries = (AcceptedMissionSortEntry*)malloc(
+        (size_t)(g_LoggedMissionCount ? g_LoggedMissionCount : 1) * sizeof(*entries));
+    if (!entries) {
+        DisplayErrorMessage("Could not sort the Accepted Missions list.", TRUE);
         return;
     }
 
-    time_t now = time(NULL);
-    struct tm* tm_info = localtime(&now);
-    char timeBuf[64];
-    strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", tm_info);
-    fprintf(g_AcceptedLogFile, "\n=== New Session: %s ===\n", timeBuf);
-    fflush(g_AcceptedLogFile);
-}
-
-void StartNewAcceptedMissionSession(void) {
-    WaitForSingleObject(g_Mutex, INFINITE);
-
     for (int i = 0; i < g_LoggedMissionCount; i++) {
-        free(g_LoggedMissions[i].header);
-        free(g_LoggedMissions[i].line);
-		free(g_LoggedMissions[i].key);
+        if (g_LoggedMissions[i].manuallyRemoved ||
+            !g_LoggedMissions[i].confirmedActive)
+            continue;
+        snprintf(entries[entryCount].location, sizeof(entries[entryCount].location), "%s",
+            GetAcceptedMissionLocation(&g_LoggedMissions[i].mission));
+        entries[entryCount].missionIndex = i;
+        entryCount++;
     }
-    free(g_LoggedMissions);
-    g_LoggedMissions = NULL;
-    g_LoggedMissionCount = 0;
-    g_LoggedMissionCapacity = 0;
+    qsort(entries, entryCount, sizeof(*entries), CompareAcceptedMissionSortEntries);
 
-    ReleaseMutex(g_Mutex);
+    if (entryCount > 0) {
+        groupViews = (AcceptedMissionGroupView*)calloc((size_t)entryCount,
+            sizeof(*groupViews));
+        if (!groupViews) {
+            free(entries);
+            DisplayErrorMessage("Could not group the Accepted Missions list.", TRUE);
+            return;
+        }
+        for (int i = 0; i < entryCount; i++) {
+            if (i == 0 || _stricmp(entries[i - 1].location, entries[i].location) != 0) {
+                snprintf(groupViews[groupCount].location,
+                    sizeof(groupViews[groupCount].location), "%s", entries[i].location);
+                groupViews[groupCount].collapsed =
+                    g_LoggedMissions[entries[i].missionIndex].locationCollapsed;
+                groupCount++;
+            }
+            groupViews[groupCount - 1].missionCount++;
+        }
+    }
+
+    free(g_AcceptedMissionGroupViews);
+    g_AcceptedMissionGroupViews = groupViews;
+    g_AcceptedMissionGroupViewCount = groupCount;
+    SendMessage(g_hAcceptedMissionList, LB_RESETCONTENT, 0, 0);
+
+    int entryIndex = 0;
+    for (int group = 0; group < groupCount; group++) {
+        char header[CS_ACCEPTED_MISSION_LOCATION_SIZE + 64];
+        snprintf(header, sizeof(header), "%s %s (%d)",
+            g_AcceptedMissionGroupViews[group].collapsed ? "[+]" : "[-]",
+            g_AcceptedMissionGroupViews[group].location,
+            g_AcceptedMissionGroupViews[group].missionCount);
+        LRESULT row = SendMessageA(g_hAcceptedMissionList, LB_ADDSTRING, 0,
+            (LPARAM)header);
+        if (row != LB_ERR && row != LB_ERRSPACE) {
+            int headerData = -(group + 1);
+            SendMessage(g_hAcceptedMissionList, LB_SETITEMDATA,
+                (WPARAM)row, (LPARAM)headerData);
+            if (!firstGroupData)
+                firstGroupData = headerData;
+        }
+
+        while (entryIndex < entryCount &&
+            _stricmp(entries[entryIndex].location,
+                g_AcceptedMissionGroupViews[group].location) == 0) {
+            if (!g_AcceptedMissionGroupViews[group].collapsed) {
+                int missionIndex = entries[entryIndex].missionIndex;
+                const char* title = g_LoggedMissions[missionIndex].mission.title;
+                char display[512];
+                if (!title[0]) {
+                    snprintf(display, sizeof(display), "  (Untitled mission %u) - %s",
+                        g_LoggedMissions[missionIndex].mission.missionId,
+                        MissionTypeIdToString(g_LoggedMissions[missionIndex].mission.missionTypeId));
+                } else {
+                    snprintf(display, sizeof(display), "  %s - %s",
+                        title, MissionTypeIdToString(g_LoggedMissions[missionIndex].mission.missionTypeId));
+                }
+                row = SendMessageA(g_hAcceptedMissionList, LB_ADDSTRING, 0,
+                    (LPARAM)display);
+                if (row != LB_ERR && row != LB_ERRSPACE) {
+                    int missionData = missionIndex + 1;
+                    SendMessage(g_hAcceptedMissionList, LB_SETITEMDATA,
+                        (WPARAM)row, (LPARAM)missionData);
+                    if (!firstMissionData)
+                        firstMissionData = missionData;
+                }
+            }
+            entryIndex++;
+        }
+    }
+
+    free(entries);
+    if (firstMissionData || firstGroupData) {
+        int selectionRow = LB_ERR;
+        int fallbackRow = LB_ERR;
+        int rowCount = (int)SendMessage(g_hAcceptedMissionList, LB_GETCOUNT, 0, 0);
+        for (int row = 0; row < rowCount; row++) {
+            int itemData = (int)SendMessage(g_hAcceptedMissionList, LB_GETITEMDATA,
+                (WPARAM)row, 0);
+            int isSelectedMission = selectedData > 0 && itemData == selectedData;
+            int isSelectedGroup = selectedGroup[0] && itemData < 0 &&
+                _stricmp(g_AcceptedMissionGroupViews[-itemData - 1].location,
+                    selectedGroup) == 0;
+            if (isSelectedMission || isSelectedGroup) {
+                selectionRow = row;
+                break;
+            }
+            if (fallbackRow == LB_ERR &&
+                ((firstMissionData && itemData == firstMissionData) ||
+                (!firstMissionData && itemData == firstGroupData)))
+                fallbackRow = row;
+        }
+        if (selectionRow == LB_ERR)
+            selectionRow = fallbackRow != LB_ERR ? fallbackRow : 0;
+
+        SendMessage(g_hAcceptedMissionList, LB_SETCURSEL, (WPARAM)selectionRow, 0);
+        int itemData = (int)SendMessage(g_hAcceptedMissionList, LB_GETITEMDATA,
+            (WPARAM)selectionRow, 0);
+        if (itemData > 0) {
+            ShowAcceptedMissionDetails(itemData - 1);
+        } else {
+            int groupIndex = -itemData - 1;
+            char details[512];
+            if (groupIndex >= 0 && groupIndex < groupCount) {
+                snprintf(details, sizeof(details), "Location: %s\r\n\r\n"
+                    "Click this location to %s its missions.",
+                    g_AcceptedMissionGroupViews[groupIndex].location,
+                    g_AcceptedMissionGroupViews[groupIndex].collapsed ? "expand" : "collapse");
+                SetWindowTextA(g_hAcceptedMissionDetails, details);
+            }
+        }
+    } else {
+        if (!g_bAcceptedMissionSnapshotReceived) {
+            SetWindowTextA(g_hAcceptedMissionDetails,
+                "Waiting for live mission-list data from Anarchy Online.");
+        } else {
+            SetWindowTextA(g_hAcceptedMissionDetails,
+                "No ClickSaver-matched missions are currently active in AO.");
+        }
+    }
 }
 
-void LogAcceptedMission(int zoneId, float x, float y, PUU32 missionTypeId,
-                        const char* findItem, PUU32 mishId, const char* missionTitle,
-                        const char* matchedLocation, const char* matchedExit,
-                        int useLocation, int useExit, const char* rawPFName)
+static void ApplyAcceptedMissionSnapshot(void)
 {
-    if (!g_AcceptedLogFile) return;
-
-    // Determine header
-    const char* headerSrc = (useExit && matchedExit) ? matchedExit
-                                                      : (rawPFName ? rawPFName : "Unknown");
-    char* headerStr = _strdup(headerSrc);
-
-    // Determine extra info
-    char extraInfo[256] = "";
-    if (useExit && matchedExit)
-        snprintf(extraInfo, sizeof(extraInfo), " (%s)", matchedExit);
-    else if (useLocation && matchedLocation)
-        snprintf(extraInfo, sizeof(extraInfo), " (%s)", matchedLocation);
-
-    // Build mission line
-    const char* missionType = MissionTypeIdToString(missionTypeId);
-    char missionDesc[512];
-    if (missionTitle && missionTitle[0])
-        snprintf(missionDesc, sizeof(missionDesc), "%s [%s]", missionType, missionTitle);
-    else
-        snprintf(missionDesc, sizeof(missionDesc), "%s", missionType);
-
-    char lineStr[1024];
-    snprintf(lineStr, sizeof(lineStr), "%s - /waypoint %.1f %.1f %d%s",
-             missionDesc, x, y, zoneId, extraInfo);
-
-    // Build dedup key
-    char key[512];
-    snprintf(key, sizeof(key), "%u|%s|%.1f|%.1f|%d",
-             mishId, missionTitle ? missionTitle : "", x, y, zoneId);
+    PUU32 missionIds[CS_ACCEPTED_MISSION_SYNC_MAX];
+    PUU32 missionCount;
 
     WaitForSingleObject(g_Mutex, INFINITE);
-
-    // Duplicate check against existing buffered lines
-    for (int i = 0; i < g_LoggedMissionCount; i++) {
-		if (strcmp(g_LoggedMissions[i].key, key) == 0) {
-			ReleaseMutex(g_Mutex);
-			free(headerStr);
-			return;
-		}
-	}
-
-    // Buffer the mission
-    if (g_LoggedMissionCount >= g_LoggedMissionCapacity) {
-        g_LoggedMissionCapacity = g_LoggedMissionCapacity ? g_LoggedMissionCapacity * 2 : 16;
-        g_LoggedMissions = realloc(g_LoggedMissions, g_LoggedMissionCapacity * sizeof(LoggedMission));
-    }
-    g_LoggedMissions[g_LoggedMissionCount].header = headerStr;
-    g_LoggedMissions[g_LoggedMissionCount].line   = _strdup(lineStr);
-	g_LoggedMissions[g_LoggedMissionCount].key    = _strdup(key);
-    g_LoggedMissionCount++;
-
+    missionCount = g_AcceptedMissionSnapshotCount;
+    memcpy(missionIds, g_AcceptedMissionSnapshot,
+        missionCount * sizeof(missionIds[0]));
+    g_bAcceptedMissionSnapshotReceived = 1;
     ReleaseMutex(g_Mutex);
+
+    for (int i = 0; i < g_LoggedMissionCount; i++) {
+        int active = 0;
+        for (PUU32 j = 0; j < missionCount; j++) {
+            if (g_LoggedMissions[i].mission.missionId == missionIds[j]) {
+                active = 1;
+                break;
+            }
+        }
+        g_LoggedMissions[i].confirmedActive = active;
+    }
+
+    RefreshAcceptedMissionsWindow();
 }
 
-void CloseAcceptedMissionLog(void) {
-    if (g_AcceptedLogFile) {
-        FlushAcceptedMissionLog();
-        fclose(g_AcceptedLogFile);
-        g_AcceptedLogFile = NULL;
+BOOL ReceiveAcceptedMissionSnapshot(const void* data, PUU32 size)
+{
+    const unsigned char* bytes = (const unsigned char*)data;
+    PUU32 version;
+    PUU32 count;
+    PUU32 expectedSize;
+
+    if (!bytes || size < 2 * sizeof(PUU32))
+        return FALSE;
+
+    memcpy(&version, bytes, sizeof(version));
+    memcpy(&count, bytes + sizeof(version), sizeof(count));
+    if (version != 1 || count > CS_ACCEPTED_MISSION_SYNC_MAX)
+        return FALSE;
+
+    expectedSize = 2 * sizeof(PUU32) + count * sizeof(PUU32);
+    if (size != expectedSize)
+        return FALSE;
+
+    if (WaitForSingleObject(g_Mutex, INFINITE) == WAIT_FAILED)
+        return FALSE;
+    g_AcceptedMissionSnapshotCount = count;
+    if (count > 0)
+        memcpy(g_AcceptedMissionSnapshot, bytes + 2 * sizeof(PUU32),
+            count * sizeof(PUU32));
+    ReleaseMutex(g_Mutex);
+
+    puSendAppMessage(CSAM_SYNC_ACCEPTED_MISSIONS, 0);
+    return TRUE;
+}
+
+static void RemoveAcceptedMissionAt(int index)
+{
+    if (index < 0 || index >= g_LoggedMissionCount)
+        return;
+
+    g_LoggedMissions[index].manuallyRemoved = 1;
+    if (!SaveAcceptedMissionStore())
+        DisplayErrorMessage("Could not save AcceptedMissions.dat.", TRUE);
+    RefreshAcceptedMissionsWindow();
+}
+
+static int SendAcceptedMissionKey(WORD key)
+{
+    INPUT input[2] = { 0 };
+    input[0].type = INPUT_KEYBOARD;
+    input[0].ki.wVk = key;
+    input[1] = input[0];
+    input[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    return SendInput(2, input, sizeof(INPUT)) == 2;
+}
+
+static int SendAcceptedMissionText(const char* text)
+{
+    for (const unsigned char* p = (const unsigned char*)text; *p; p++) {
+        SHORT mapped = VkKeyScanA((CHAR)*p);
+        if (mapped == -1)
+            return 0;
+
+        BYTE modifiers = HIBYTE(mapped);
+        INPUT input[8] = { 0 };
+        UINT count = 0;
+        if (modifiers & 1) {
+            input[count].type = INPUT_KEYBOARD;
+            input[count++].ki.wVk = VK_SHIFT;
+        }
+        if (modifiers & 2) {
+            input[count].type = INPUT_KEYBOARD;
+            input[count++].ki.wVk = VK_CONTROL;
+        }
+        if (modifiers & 4) {
+            input[count].type = INPUT_KEYBOARD;
+            input[count++].ki.wVk = VK_MENU;
+        }
+
+        WORD key = LOBYTE(mapped);
+        input[count].type = INPUT_KEYBOARD;
+        input[count++].ki.wVk = key;
+        input[count].type = INPUT_KEYBOARD;
+        input[count].ki.wVk = key;
+        input[count++].ki.dwFlags = KEYEVENTF_KEYUP;
+
+        if (modifiers & 4) {
+            input[count].type = INPUT_KEYBOARD;
+            input[count].ki.wVk = VK_MENU;
+            input[count++].ki.dwFlags = KEYEVENTF_KEYUP;
+        }
+        if (modifiers & 2) {
+            input[count].type = INPUT_KEYBOARD;
+            input[count].ki.wVk = VK_CONTROL;
+            input[count++].ki.dwFlags = KEYEVENTF_KEYUP;
+        }
+        if (modifiers & 1) {
+            input[count].type = INPUT_KEYBOARD;
+            input[count].ki.wVk = VK_SHIFT;
+            input[count++].ki.dwFlags = KEYEVENTF_KEYUP;
+        }
+        if (SendInput(count, input, sizeof(INPUT)) != count)
+            return 0;
+    }
+    return 1;
+}
+
+static void CreateAcceptedMissionWaypoint(HWND hWnd, int index)
+{
+    CSAcceptedMission* mission;
+    HWND gameWindow = FindWindowA("Anarchy client", NULL);
+    char command[128];
+
+    if (index < 0 || index >= g_LoggedMissionCount)
+        return;
+    if (!gameWindow) {
+        MessageBoxA(hWnd, "Anarchy Online is not running.", "Waypoint",
+            MB_OK | MB_ICONERROR);
+        return;
+    }
+    if (MessageBoxA(hWnd,
+        "This will bring Anarchy Online to the foreground and discard any "
+        "unsent chat text before sending the waypoint. Continue?",
+        "Send Waypoint", MB_YESNO | MB_ICONWARNING) != IDYES)
+        return;
+
+    mission = &g_LoggedMissions[index].mission;
+    snprintf(command, sizeof(command), "/waypoint %.1f %.1f %u",
+        mission->x, mission->y, mission->zoneId);
+
+    ShowWindow(gameWindow, SW_RESTORE);
+    SetForegroundWindow(gameWindow);
+    Sleep(150);
+    if (GetForegroundWindow() != gameWindow) {
+        MessageBoxA(hWnd, "Could not bring Anarchy Online to the foreground. "
+            "The waypoint was not sent.", "Waypoint", MB_OK | MB_ICONERROR);
+        return;
     }
 
-    WaitForSingleObject(g_Mutex, INFINITE);
+    if (!SendAcceptedMissionKey(VK_ESCAPE) ||
+        !SendAcceptedMissionKey(VK_RETURN)) {
+        MessageBoxA(hWnd, "Could not open Anarchy Online chat. "
+            "The waypoint was not sent.", "Waypoint", MB_OK | MB_ICONERROR);
+        return;
+    }
+    Sleep(100);
+    if (!SendAcceptedMissionText(command) || !SendAcceptedMissionKey(VK_RETURN)) {
+        SendAcceptedMissionKey(VK_ESCAPE);
+        MessageBoxA(hWnd, "Could not send the waypoint command to Anarchy Online.",
+            "Waypoint", MB_OK | MB_ICONERROR);
+        return;
+    }
+}
 
+static LRESULT CALLBACK AcceptedMissionsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg) {
+    case WM_CREATE: {
+        HWND label = CreateWindowExA(0, "STATIC", "Accepted missions",
+            WS_CHILD | WS_VISIBLE, 12, 12, 250, 18, hWnd, NULL,
+            GetModuleHandle(NULL), NULL);
+        g_hAcceptedMissionList = CreateWindowExA(WS_EX_CLIENTEDGE, "LISTBOX", "",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT |
+            WS_VSCROLL, 12, 34, 240, 325, hWnd,
+            (HMENU)IDC_ACCEPTED_MISSION_LIST, GetModuleHandle(NULL), NULL);
+        HWND detailsLabel = CreateWindowExA(0, "STATIC", "Mission details",
+            WS_CHILD | WS_VISIBLE, 266, 12, 400, 18, hWnd, NULL,
+            GetModuleHandle(NULL), NULL);
+        g_hAcceptedMissionDetails = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_READONLY |
+            ES_AUTOVSCROLL | WS_VSCROLL, 266, 34, 430, 325, hWnd,
+            (HMENU)IDC_ACCEPTED_MISSION_DETAILS, GetModuleHandle(NULL), NULL);
+        HWND removeButton = CreateWindowExA(0, "BUTTON", "Remove selected",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 12, 372, 115, 26,
+            hWnd, (HMENU)IDC_ACCEPTED_MISSION_REMOVE, GetModuleHandle(NULL), NULL);
+        HWND waypointButton = CreateWindowExA(0, "BUTTON", "Create Waypoint",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 266, 372, 120, 26,
+            hWnd, (HMENU)IDC_ACCEPTED_MISSION_WAYPOINT, GetModuleHandle(NULL), NULL);
+        HWND closeButton = CreateWindowExA(0, "BUTTON", "Close",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 606, 372, 90, 26,
+            hWnd, (HMENU)IDC_ACCEPTED_MISSION_CLOSE, GetModuleHandle(NULL), NULL);
+        if (!label || !g_hAcceptedMissionList || !detailsLabel ||
+            !g_hAcceptedMissionDetails || !removeButton || !waypointButton || !closeButton)
+            return -1;
+        SetAcceptedControlFont(label);
+        SetAcceptedControlFont(g_hAcceptedMissionList);
+        SetWindowSubclass(g_hAcceptedMissionList,
+            AcceptedMissionListWndProc, 1, 0);
+        SetAcceptedControlFont(detailsLabel);
+        SetAcceptedControlFont(g_hAcceptedMissionDetails);
+        SetAcceptedControlFont(removeButton);
+        SetAcceptedControlFont(waypointButton);
+        SetAcceptedControlFont(closeButton);
+        RefreshAcceptedMissionsWindow();
+        return 0;
+    }
+    case WM_SIZE: {
+        int width = LOWORD(lParam);
+        int height = HIWORD(lParam);
+        int listWidth = 240;
+        int margin = 12;
+        int buttonY = height - 38;
+        MoveWindow(GetDlgItem(hWnd, IDC_ACCEPTED_MISSION_LIST), margin, 34,
+            listWidth, buttonY - 42, TRUE);
+        MoveWindow(GetDlgItem(hWnd, IDC_ACCEPTED_MISSION_DETAILS), 266, 34,
+            width - 278, buttonY - 42, TRUE);
+        MoveWindow(GetDlgItem(hWnd, IDC_ACCEPTED_MISSION_REMOVE), margin, buttonY,
+            115, 26, TRUE);
+        MoveWindow(GetDlgItem(hWnd, IDC_ACCEPTED_MISSION_WAYPOINT), 266, buttonY,
+            120, 26, TRUE);
+        MoveWindow(GetDlgItem(hWnd, IDC_ACCEPTED_MISSION_CLOSE), width - 102, buttonY,
+            90, 26, TRUE);
+        return 0;
+    }
+    case WM_MOVE: {
+        RECT windowRect;
+        if (GetWindowRect(hWnd, &windowRect)) {
+            g_AcceptedMissionWindowX = windowRect.left;
+            g_AcceptedMissionWindowY = windowRect.top;
+        }
+        return 0;
+    }
+    case WM_GETMINMAXINFO: {
+        MINMAXINFO* limits = (MINMAXINFO*)lParam;
+        limits->ptMinTrackSize.x = 720;
+        limits->ptMinTrackSize.y = 450;
+        return 0;
+    }
+    case WM_COMMAND:
+        switch (LOWORD(wParam)) {
+        case IDC_ACCEPTED_MISSION_LIST:
+            if (HIWORD(wParam) == LBN_SELCHANGE) {
+                int row = (int)SendMessage(g_hAcceptedMissionList, LB_GETCURSEL, 0, 0);
+                if (row != LB_ERR) {
+                    int itemData = (int)SendMessage(g_hAcceptedMissionList,
+                        LB_GETITEMDATA, row, 0);
+                    if (itemData > 0) {
+                        ShowAcceptedMissionDetails(itemData - 1);
+                    } else if (itemData < 0) {
+                        int groupIndex = -itemData - 1;
+                        if (groupIndex < g_AcceptedMissionGroupViewCount) {
+                            char details[512];
+                            snprintf(details, sizeof(details),
+                                "Location: %s\r\n\r\nClick this location to %s its missions.",
+                                g_AcceptedMissionGroupViews[groupIndex].location,
+                                g_AcceptedMissionGroupViews[groupIndex].collapsed
+                                    ? "expand" : "collapse");
+                            SetWindowTextA(g_hAcceptedMissionDetails, details);
+                        }
+                    }
+                }
+            }
+            return 0;
+        case IDC_ACCEPTED_MISSION_REMOVE: {
+            int row = (int)SendMessage(g_hAcceptedMissionList, LB_GETCURSEL, 0, 0);
+            if (row != LB_ERR) {
+                int itemData = (int)SendMessage(g_hAcceptedMissionList, LB_GETITEMDATA, row, 0);
+                if (itemData > 0)
+                    RemoveAcceptedMissionAt(itemData - 1);
+            }
+            return 0;
+        }
+        case IDC_ACCEPTED_MISSION_WAYPOINT: {
+            int row = (int)SendMessage(g_hAcceptedMissionList, LB_GETCURSEL, 0, 0);
+            if (row != LB_ERR) {
+                int itemData = (int)SendMessage(g_hAcceptedMissionList, LB_GETITEMDATA, row, 0);
+                if (itemData > 0)
+                    CreateAcceptedMissionWaypoint(hWnd, itemData - 1);
+            }
+            return 0;
+        }
+        case IDC_ACCEPTED_MISSION_CLOSE:
+            ShowWindow(hWnd, SW_HIDE);
+            return 0;
+        }
+        break;
+    case WM_CLOSE:
+        ShowWindow(hWnd, SW_HIDE);
+        return 0;
+    case WM_DESTROY:
+        if (g_hAcceptedMissionList)
+            RemoveWindowSubclass(g_hAcceptedMissionList,
+                AcceptedMissionListWndProc, 1);
+        g_hAcceptedMissionsWindow = NULL;
+        g_hAcceptedMissionList = NULL;
+        g_hAcceptedMissionDetails = NULL;
+        free(g_AcceptedMissionGroupViews);
+        g_AcceptedMissionGroupViews = NULL;
+        g_AcceptedMissionGroupViewCount = 0;
+        return 0;
+    }
+    return DefWindowProcA(hWnd, msg, wParam, lParam);
+}
+
+void ShowAcceptedMissionsWindow(void)
+{
+    if (!g_hAcceptedMissionsWindow) {
+        WNDCLASSEXA windowClass = { 0 };
+        windowClass.cbSize = sizeof(windowClass);
+        windowClass.lpfnWndProc = AcceptedMissionsWndProc;
+        windowClass.hInstance = GetModuleHandleA(NULL);
+        windowClass.hCursor = LoadCursor(NULL, IDC_ARROW);
+        windowClass.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        windowClass.lpszClassName = "ClickSaverAcceptedMissionsWindow";
+        if (!RegisterClassExA(&windowClass) &&
+            GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            DisplayErrorMessage("Could not register the Accepted Missions window.", TRUE);
+            return;
+        }
+
+        HWND owner = g_MainWin ? (HWND)puGetAttribute(g_MainWin, PUA_WINDOW_HANDLE) : NULL;
+        g_hAcceptedMissionsWindow = CreateWindowExA(WS_EX_TOOLWINDOW,
+            windowClass.lpszClassName, "Accepted Missions",
+            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+            g_AcceptedMissionWindowX, g_AcceptedMissionWindowY,
+            720, 450, owner, NULL, windowClass.hInstance, NULL);
+        if (!g_hAcceptedMissionsWindow) {
+            DisplayErrorMessage("Could not create the Accepted Missions window.", TRUE);
+            return;
+        }
+    }
+
+    RefreshAcceptedMissionsWindow();
+    ShowWindow(g_hAcceptedMissionsWindow, SW_SHOWNORMAL);
+    SetForegroundWindow(g_hAcceptedMissionsWindow);
+}
+
+static BOOL GetAcceptedMissionStorePath(char* path, size_t pathSize)
+{
+    int length = snprintf(path, pathSize, "%s\\AcceptedMissions.dat", g_CSDir);
+    return length >= 0 && (size_t)length < pathSize;
+}
+
+static BOOL SaveAcceptedMissionStore(void)
+{
+    char path[MAX_PATH];
+    char tempPath[MAX_PATH];
+    PersistedAcceptedMissionHeader header = { "CSACM01", CS_ACCEPTED_MISSION_STORE_VERSION, 0 };
+    FILE* file;
+    BOOL succeeded = TRUE;
+    int tempPathLength;
+
+    if (WaitForSingleObject(g_Mutex, INFINITE) == WAIT_FAILED)
+        return FALSE;
+    if (g_LoggedMissionCount < 0 ||
+        g_LoggedMissionCount > CS_ACCEPTED_MISSION_STORE_MAX) {
+        ReleaseMutex(g_Mutex);
+        return FALSE;
+    }
+
+    header.count = (DWORD)g_LoggedMissionCount;
+    if (!GetAcceptedMissionStorePath(path, sizeof(path))) {
+        ReleaseMutex(g_Mutex);
+        return FALSE;
+    }
+    tempPathLength = snprintf(tempPath, sizeof(tempPath), "%s.tmp", path);
+    if (tempPathLength < 0 || (size_t)tempPathLength >= sizeof(tempPath)) {
+        ReleaseMutex(g_Mutex);
+        return FALSE;
+    }
+
+    file = fopen(tempPath, "wb");
+    if (!file) {
+        ReleaseMutex(g_Mutex);
+        return FALSE;
+    }
+
+    if (fwrite(&header, sizeof(header), 1, file) != 1)
+        succeeded = FALSE;
+
+    for (int i = 0; succeeded && i < g_LoggedMissionCount; i++) {
+        PersistedAcceptedMission record = { 0 };
+        snprintf(record.header, sizeof(record.header), "%s", g_LoggedMissions[i].header);
+        snprintf(record.line, sizeof(record.line), "%s", g_LoggedMissions[i].line);
+        snprintf(record.key, sizeof(record.key), "%s", g_LoggedMissions[i].key);
+        record.mission = g_LoggedMissions[i].mission;
+        record.manuallyRemoved = g_LoggedMissions[i].manuallyRemoved ? 1 : 0;
+        if (fwrite(&record, sizeof(record), 1, file) != 1)
+            succeeded = FALSE;
+    }
+
+    if (fflush(file) != 0)
+        succeeded = FALSE;
+    if (fclose(file) != 0)
+        succeeded = FALSE;
+
+    if (!succeeded ||
+        !MoveFileExA(tempPath, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileA(tempPath);
+        ReleaseMutex(g_Mutex);
+        return FALSE;
+    }
+
+    ReleaseMutex(g_Mutex);
+    return TRUE;
+}
+
+static BOOL IsPersistedMissionRecordValid(const PersistedAcceptedMission* record)
+{
+    return record &&
+        memchr(record->header, '\0', sizeof(record->header)) &&
+        memchr(record->line, '\0', sizeof(record->line)) &&
+        memchr(record->key, '\0', sizeof(record->key)) &&
+        record->key[0] &&
+        memchr(record->mission.title, '\0', sizeof(record->mission.title)) &&
+        memchr(record->mission.playfield, '\0', sizeof(record->mission.playfield)) &&
+        memchr(record->mission.findItem, '\0', sizeof(record->mission.findItem)) &&
+        memchr(record->mission.matchedLocation, '\0', sizeof(record->mission.matchedLocation)) &&
+        memchr(record->mission.matchedExit, '\0', sizeof(record->mission.matchedExit)) &&
+        record->mission.rewardCount <= CS_ACCEPTED_MISSION_MAX_ITEMS;
+}
+
+static BOOL LoadAcceptedMissionStore(void)
+{
+    char path[MAX_PATH];
+    PersistedAcceptedMissionHeader header;
+    PersistedAcceptedMission* records = NULL;
+    LARGE_INTEGER fileSize;
+    HANDLE storeHandle;
+    FILE* file = NULL;
+    BOOL valid = FALSE;
+
+    if (!GetAcceptedMissionStorePath(path, sizeof(path))) {
+        DisplayErrorMessage("The AcceptedMissions.dat path is too long.", TRUE);
+        return FALSE;
+    }
+    storeHandle = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (storeHandle == INVALID_HANDLE_VALUE) {
+        if (GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND)
+            return TRUE;
+        DisplayErrorMessage("Could not open AcceptedMissions.dat.", TRUE);
+        return FALSE;
+    }
+
+    if (!GetFileSizeEx(storeHandle, &fileSize) ||
+        fileSize.QuadPart < (LONGLONG)sizeof(header)) {
+        CloseHandle(storeHandle);
+        DisplayErrorMessage("AcceptedMissions.dat is invalid or incomplete.", TRUE);
+        return FALSE;
+    }
+    CloseHandle(storeHandle);
+
+    file = fopen(path, "rb");
+    if (!file) {
+        DisplayErrorMessage("Could not read AcceptedMissions.dat.", TRUE);
+        return FALSE;
+    }
+    if (fread(&header, sizeof(header), 1, file) != 1 ||
+        memcmp(header.signature, "CSACM01", 7) != 0 ||
+        header.version != CS_ACCEPTED_MISSION_STORE_VERSION ||
+        header.count > CS_ACCEPTED_MISSION_STORE_MAX ||
+        fileSize.QuadPart != (LONGLONG)sizeof(header) +
+            (LONGLONG)header.count * sizeof(PersistedAcceptedMission)) {
+        DisplayErrorMessage("AcceptedMissions.dat has an unsupported or invalid format.", TRUE);
+        goto cleanup;
+    }
+
+    if (header.count > 0) {
+        records = (PersistedAcceptedMission*)malloc(
+            (size_t)header.count * sizeof(PersistedAcceptedMission));
+        if (!records) {
+            DisplayErrorMessage("Could not allocate memory to load saved missions.", TRUE);
+            goto cleanup;
+        }
+        if (fread(records, sizeof(PersistedAcceptedMission), header.count, file) != header.count) {
+            DisplayErrorMessage("Could not read saved mission records.", TRUE);
+            goto cleanup;
+        }
+    }
+
+    for (DWORD i = 0; i < header.count; i++) {
+        LoggedMission* entry;
+        if (!IsPersistedMissionRecordValid(&records[i])) {
+            DisplayErrorMessage("AcceptedMissions.dat contains an invalid mission record.", TRUE);
+            goto cleanup;
+        }
+        if (g_LoggedMissionCount >= CS_ACCEPTED_MISSION_STORE_MAX) {
+            DisplayErrorMessage("AcceptedMissions.dat contains too many mission records.", TRUE);
+            goto cleanup;
+        }
+        if (g_LoggedMissionCount >= g_LoggedMissionCapacity) {
+            int capacity = g_LoggedMissionCapacity ? g_LoggedMissionCapacity * 2 : 16;
+            if (capacity > CS_ACCEPTED_MISSION_STORE_MAX)
+                capacity = CS_ACCEPTED_MISSION_STORE_MAX;
+            LoggedMission* missions = (LoggedMission*)realloc(g_LoggedMissions,
+                (size_t)capacity * sizeof(LoggedMission));
+            if (!missions) {
+                DisplayErrorMessage("Could not grow the saved mission list.", TRUE);
+                goto cleanup;
+            }
+            g_LoggedMissions = missions;
+            g_LoggedMissionCapacity = capacity;
+        }
+
+        entry = &g_LoggedMissions[g_LoggedMissionCount];
+        memset(entry, 0, sizeof(*entry));
+        entry->header = _strdup(records[i].header);
+        entry->line = _strdup(records[i].line);
+        entry->key = _strdup(records[i].key);
+        if (!entry->header || !entry->line || !entry->key) {
+            free(entry->header);
+            free(entry->line);
+            free(entry->key);
+            memset(entry, 0, sizeof(*entry));
+            DisplayErrorMessage("Could not allocate memory for a saved mission.", TRUE);
+            goto cleanup;
+        }
+        entry->mission = records[i].mission;
+        entry->manuallyRemoved = records[i].manuallyRemoved != 0;
+        entry->confirmedActive = 0;
+        g_LoggedMissionCount++;
+    }
+
+    valid = TRUE;
+
+cleanup:
+    free(records);
+    fclose(file);
+    if (!valid)
+        ClearAcceptedMissionBuffer();
+    return valid;
+}
+
+static void ClearAcceptedMissionBuffer(void)
+{
+    WaitForSingleObject(g_Mutex, INFINITE);
     for (int i = 0; i < g_LoggedMissionCount; i++) {
         free(g_LoggedMissions[i].header);
         free(g_LoggedMissions[i].line);
-		free(g_LoggedMissions[i].key);
+        free(g_LoggedMissions[i].key);
     }
     free(g_LoggedMissions);
     g_LoggedMissions = NULL;
     g_LoggedMissionCount = 0;
     g_LoggedMissionCapacity = 0;
-
     ReleaseMutex(g_Mutex);
+    RefreshAcceptedMissionsWindow();
+}
+
+void LogAcceptedMission(const CSAcceptedMission* mission)
+{
+    const char* headerSrc;
+    char* headerStr;
+    char* lineCopy;
+    char* keyCopy;
+    char extraInfo[256] = "";
+    char missionDesc[512];
+    char lineStr[1024];
+    char key[512];
+
+    if (!mission)
+        return;
+
+    headerSrc = (mission->useExit && mission->matchedExit[0])
+        ? mission->matchedExit
+        : (mission->playfield[0] ? mission->playfield : "Unknown");
+    if (mission->useExit && mission->matchedExit[0])
+        snprintf(extraInfo, sizeof(extraInfo), " (%s)", mission->matchedExit);
+    else if (mission->useLocation && mission->matchedLocation[0])
+        snprintf(extraInfo, sizeof(extraInfo), " (%s)", mission->matchedLocation);
+
+    if (mission->title[0])
+        snprintf(missionDesc, sizeof(missionDesc), "%s [%s]",
+            MissionTypeIdToString(mission->missionTypeId), mission->title);
+    else
+        snprintf(missionDesc, sizeof(missionDesc), "%s",
+            MissionTypeIdToString(mission->missionTypeId));
+
+    snprintf(lineStr, sizeof(lineStr), "%s - /waypoint %.1f %.1f %u%s",
+        missionDesc, mission->x, mission->y, mission->zoneId, extraInfo);
+    snprintf(key, sizeof(key), "%u|%s|%.1f|%.1f|%u",
+        mission->missionId, mission->title, mission->x, mission->y, mission->zoneId);
+
+    headerStr = _strdup(headerSrc);
+    lineCopy = _strdup(lineStr);
+    keyCopy = _strdup(key);
+    if (!headerStr || !lineCopy || !keyCopy) {
+        free(headerStr);
+        free(lineCopy);
+        free(keyCopy);
+        DisplayErrorMessage("Could not allocate memory for an accepted mission.", TRUE);
+        return;
+    }
+
+    WaitForSingleObject(g_Mutex, INFINITE);
+    for (int i = 0; i < g_LoggedMissionCount; i++) {
+        if (strcmp(g_LoggedMissions[i].key, key) == 0) {
+            free(g_LoggedMissions[i].header);
+            free(g_LoggedMissions[i].line);
+            free(g_LoggedMissions[i].key);
+            g_LoggedMissions[i].header = headerStr;
+            g_LoggedMissions[i].line = lineCopy;
+            g_LoggedMissions[i].key = keyCopy;
+            g_LoggedMissions[i].mission = *mission;
+            g_LoggedMissions[i].manuallyRemoved = 0;
+            g_LoggedMissions[i].confirmedActive = 0;
+            ReleaseMutex(g_Mutex);
+            if (!SaveAcceptedMissionStore())
+                DisplayErrorMessage("Could not save AcceptedMissions.dat.", TRUE);
+            RefreshAcceptedMissionsWindow();
+            return;
+        }
+    }
+
+    if (g_LoggedMissionCount >= CS_ACCEPTED_MISSION_STORE_MAX) {
+        ReleaseMutex(g_Mutex);
+        free(headerStr);
+        free(lineCopy);
+        free(keyCopy);
+        DisplayErrorMessage("The accepted mission list reached its storage limit.", TRUE);
+        return;
+    }
+
+    if (g_LoggedMissionCount >= g_LoggedMissionCapacity) {
+        int capacity = g_LoggedMissionCapacity ? g_LoggedMissionCapacity * 2 : 16;
+        LoggedMission* missions = realloc(g_LoggedMissions,
+            (size_t)capacity * sizeof(LoggedMission));
+        if (!missions) {
+            ReleaseMutex(g_Mutex);
+            free(headerStr);
+            free(lineCopy);
+            free(keyCopy);
+            DisplayErrorMessage("Could not grow the accepted mission list.", TRUE);
+            return;
+        }
+        g_LoggedMissions = missions;
+        g_LoggedMissionCapacity = capacity;
+    }
+
+    LoggedMission* entry = &g_LoggedMissions[g_LoggedMissionCount++];
+    entry->header = headerStr;
+    entry->line = lineCopy;
+    entry->key = keyCopy;
+    entry->mission = *mission;
+    entry->manuallyRemoved = 0;
+    entry->confirmedActive = 0;
+    ReleaseMutex(g_Mutex);
+    if (!SaveAcceptedMissionStore())
+        DisplayErrorMessage("Could not save AcceptedMissions.dat.", TRUE);
+    RefreshAcceptedMissionsWindow();
+}
+
+void CloseAcceptedMissions(void) {
+    if (g_hAcceptedMissionsWindow)
+        DestroyWindow(g_hAcceptedMissionsWindow);
+
+    if (!SaveAcceptedMissionStore() && g_LoggedMissionCount > 0)
+        DisplayErrorMessage("Could not save AcceptedMissions.dat.", TRUE);
+    ClearAcceptedMissionBuffer();
 }
 
 void UpdateAcceptedCountersForMission( int mishIndex )

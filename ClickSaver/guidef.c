@@ -142,6 +142,15 @@ PUU32 g_GUIDef[]=
                 0,
         PU_ENDGROUP,
 
+        PUM_ADDCHILD, PU_ACTION_OBJDEF, 0, ( PUU32 )"Text",
+            PUA_TEXT_STRING, ( PUU32 )"Accepted Missions",
+            PUA_CONTROL_FRAME, PUFRAME_BUTTON,
+            PUA_CONTROL_ISBUTTON, TRUE, 0,
+            PUM_ADDNOTIFICATION,
+                PUNOTIFY_CONDITION_ATTREQUALS, PUA_CONTROL_CLICKED, TRUE,
+                PUNOTIFY_ACTION_APPMSG, CSAM_SHOW_ACCEPTED_MISSIONS,
+            0,
+
     PU_ENDGROUP,
 // ****
 

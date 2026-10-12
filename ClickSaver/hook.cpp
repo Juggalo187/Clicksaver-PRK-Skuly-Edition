@@ -210,6 +210,12 @@ LRESULT CALLBACK HookWndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam 
         break;
     case WM_COPYDATA:
         pData = (PCOPYDATASTRUCT)lParam;
+        if (pData && pData->dwData == CS_ACCEPTED_MISSION_SYNC_COPYDATA)
+        {
+            if (pData->lpData && pData->cbData > 0)
+                ReceiveAcceptedMissionSnapshot(pData->lpData, pData->cbData);
+            break;
+        }
         if (!pData || !pData->lpData || pData->cbData > sizeof(g_CurrentPacket))
             break;
         WaitForSingleObject( g_Mutex, INFINITE );

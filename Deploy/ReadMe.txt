@@ -73,6 +73,19 @@ coordinates, QL, reward item, find item, item icon and cash)
 Items matching the "item watch" criterias are displayed in red.
 In addition, a message box can be displayed.
 
+The "Accepted Missions" button opens a separate window showing missions
+that ClickSaver has matched and that are currently present in AO's mission
+list, including their details, reward items, and matched location or exit.
+Missions are sorted into collapsible groups by matched location or exit.
+Entries disappear when AO removes the mission. "Remove selected" hides an
+entry manually. "Create Waypoint" brings AO to the foreground and sends the
+selected mission's waypoint command after warning that any unsent chat text
+will be discarded. Live mission tracking uses ClickSaver's injected AOHook;
+it does not require Dmap or AOSharp. Matched mission details are saved in
+AcceptedMissions.dat so the window can restore missions across ClickSaver
+restarts; missions are shown again only when AO confirms their IDs are still
+active. The window position is saved with ClickSaver's settings.
+
 The "item list" tab shows a list where you can enter substring to
 search among item names. Ex: "battle suit", "hand axe", etc.
 In addition to the add and remove buttons, there's several
