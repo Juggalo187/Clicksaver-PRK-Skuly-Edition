@@ -1025,6 +1025,8 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     pusObjectCollection* pPrevCol;
     CSAcceptedMission acceptedMission = { 0 };
     CharKey[0] = '\0';
+    snprintf(acceptedMission.characterName, sizeof(acceptedMission.characterName),
+        "%s", g_CurrentCharacterName);
 
     pEndMissionData = _pMissionData + 65536 - 4;
     

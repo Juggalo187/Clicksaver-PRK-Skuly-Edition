@@ -34,6 +34,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <windows.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <Detours/detours.h>
 
 void*   g_pDataBlockToMessage = NULL;
@@ -71,6 +72,31 @@ typedef void* (__thiscall *GetClientControlDynelFn)(void* pEngine);
 
 static volatile LONG g_bStopMissionScanner = 0;
 static HANDLE g_hMissionScannerThread = NULL;
+
+static HWND GetAOClientWindow()
+{
+    struct WindowSearch {
+        DWORD processId;
+        HWND window;
+    } search = { GetCurrentProcessId(), NULL };
+
+    EnumWindows([](HWND window, LPARAM parameter) -> BOOL {
+        WindowSearch* search = reinterpret_cast<WindowSearch*>(parameter);
+        char className[64] = "";
+        DWORD processId = 0;
+        GetClassNameA(window, className, sizeof(className));
+        if (strcmp(className, "Anarchy client") == 0) {
+            GetWindowThreadProcessId(window, &processId);
+            if (processId == search->processId) {
+                search->window = window;
+                return FALSE;
+            }
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&search));
+
+    return search.window;
+}
 
 static BOOL IsReadableRange(const void* address, SIZE_T size)
 {
@@ -195,8 +221,9 @@ static DWORD WINAPI AcceptedMissionScannerThread(void*)
     {
         AcceptedMissionSnapshot snapshot = { 0 };
         HWND clickSaverWindow = NULL;
+        HWND aoWindow = GetAOClientWindow();
 
-        if (TryReadAcceptedMissionSnapshot(&snapshot))
+        if (aoWindow && TryReadAcceptedMissionSnapshot(&snapshot))
         {
             BOOL changed = !hasPreviousSnapshot ||
                 snapshot.count != previousSnapshot.count;
@@ -222,7 +249,8 @@ static DWORD WINAPI AcceptedMissionScannerThread(void*)
                 data.cbData = sizeof(snapshot.version) + sizeof(snapshot.count) +
                     snapshot.count * sizeof(snapshot.missionIds[0]);
                 data.lpData = &snapshot;
-                if (SendMessageTimeoutA(clickSaverWindow, WM_COPYDATA, 0,
+                if (SendMessageTimeoutA(clickSaverWindow, WM_COPYDATA,
+                    (WPARAM)aoWindow,
                     (LPARAM)&data, SMTO_ABORTIFHUNG, 500, &result))
                 {
                     previousSnapshot = snapshot;
@@ -233,7 +261,7 @@ static DWORD WINAPI AcceptedMissionScannerThread(void*)
             }
         }
 
-        if (!clickSaverWindow)
+        if (!clickSaverWindow || !aoWindow)
             previousWindow = NULL;
         Sleep(1000);
     }
@@ -265,13 +293,15 @@ Message_t* DataBlockToMessageHook( int _Size, void* _pDataBlock )
         {
             // Find ClickSaver's hook thread window and send the datas
             // using WM_COPYDATA
-            if( hWnd = FindWindow( "ClickSaverHookWindowClass", "ClickSaverHookWindow" ) )
+            HWND aoWindow = GetAOClientWindow();
+            if( (hWnd = FindWindow( "ClickSaverHookWindowClass", "ClickSaverHookWindow" )) &&
+                aoWindow )
             {
                 COPYDATASTRUCT Data = { 0 };
                 Data.dwData = 0;
                 Data.cbData = _Size;
                 Data.lpData = _pDataBlock;
-                SendMessage( hWnd, WM_COPYDATA, 0, (LPARAM)&Data );
+                SendMessage( hWnd, WM_COPYDATA, (WPARAM)aoWindow, (LPARAM)&Data );
             }
         }
     }

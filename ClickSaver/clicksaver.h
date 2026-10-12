@@ -29,6 +29,7 @@ void EndBuyingAgent(int keepWindow);
 #define CS_ACCEPTED_MISSION_TITLE_SIZE 256
 #define CS_ACCEPTED_MISSION_LOCATION_SIZE 256
 #define CS_ACCEPTED_MISSION_FIND_SIZE 256
+#define CS_ACCEPTED_MISSION_CHARACTER_SIZE 128
 #define CS_ACCEPTED_MISSION_SYNC_COPYDATA 0x314D5343UL
 #define CS_ACCEPTED_MISSION_SYNC_MAX 128
 #define IDC_ACCEPTED_MISSION_LIST 300
@@ -61,14 +62,25 @@ typedef struct {
     int useExit;
     PUU32 rewardCount;
     CSAcceptedMissionItem rewards[CS_ACCEPTED_MISSION_MAX_ITEMS];
+    char characterName[CS_ACCEPTED_MISSION_CHARACTER_SIZE];
 } CSAcceptedMission;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern char g_CurrentCharacterName[CS_ACCEPTED_MISSION_CHARACTER_SIZE];
+#ifdef __cplusplus
+}
+#endif
 
 void ShowAcceptedMissionsWindow(void);
 void LogAcceptedMission(const CSAcceptedMission* mission);
 #ifdef __cplusplus
 extern "C" {
 #endif
-BOOL ReceiveAcceptedMissionSnapshot(const void* data, PUU32 size);
+BOOL ReceiveAcceptedMissionSnapshot(const void* data, PUU32 size, HWND sourceWindow);
+BOOL QueueIncomingMissionPacket(const void* data, PUU32 size, const char* characterName);
+BOOL DequeueIncomingMissionPacket(void);
 #ifdef __cplusplus
 }
 #endif

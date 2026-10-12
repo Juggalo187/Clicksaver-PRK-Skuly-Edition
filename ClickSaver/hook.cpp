@@ -182,20 +182,28 @@ bool InjectDLL( DWORD ProcessID, std::string const& dllName )
 
 void Inject()
 {
-    HWND AOWnd;
-    DWORD AOProcessId;
+    struct InjectionContext {
+        char dllPath[MAX_PATH];
+    } context;
+    snprintf(context.dllPath, sizeof(context.dllPath), "%s\\AOHook.dll", g_CSDir);
 
-    if( AOWnd = FindWindow( "Anarchy client", NULL ) )
-    {
-        char Temp[ 256 ];
+    EnumWindows([](HWND window, LPARAM parameter) -> BOOL {
+        char className[64] = "";
+        DWORD processId = 0;
+        GetClassNameA(window, className, sizeof(className));
+        if (strcmp(className, "Anarchy client") != 0)
+            return TRUE;
 
-        GetWindowThreadProcessId( AOWnd, &AOProcessId );
-        sprintf( Temp, "%s\\AOHook.dll", g_CSDir );
-        if( !InjectDLL( AOProcessId, Temp ) )
-        {
-            // error...
-        }
-    }
+        GetWindowThreadProcessId(window, &processId);
+        if (!processId)
+            return TRUE;
+
+        HMODULE installed = GetRemoteModuleHandle(processId, "AOHook.dll");
+        if (!installed)
+            InjectDLL(processId,
+                static_cast<InjectionContext*>(reinterpret_cast<void*>(parameter))->dllPath);
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&context));
 }
 
 
@@ -208,22 +216,24 @@ LRESULT CALLBACK HookWndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam 
     case WM_TIMER:
         Inject();
         break;
-    case WM_COPYDATA:
+    case WM_COPYDATA: {
         pData = (PCOPYDATASTRUCT)lParam;
         if (pData && pData->dwData == CS_ACCEPTED_MISSION_SYNC_COPYDATA)
         {
             if (pData->lpData && pData->cbData > 0)
-                ReceiveAcceptedMissionSnapshot(pData->lpData, pData->cbData);
+                ReceiveAcceptedMissionSnapshot(pData->lpData, pData->cbData,
+                    (HWND)wParam);
             break;
         }
         if (!pData || !pData->lpData || pData->cbData > sizeof(g_CurrentPacket))
             break;
-        WaitForSingleObject( g_Mutex, INFINITE );
-        memset( g_CurrentPacket, 0, 65536 );
-        memcpy( g_CurrentPacket, pData->lpData, pData->cbData );
-        ReleaseMutex( g_Mutex );
-        puSendAppMessage( CSAM_NEWMISSIONS, 0 );
+        char characterName[CS_ACCEPTED_MISSION_CHARACTER_SIZE] = "";
+        if (wParam && IsWindow((HWND)wParam))
+            GetWindowTextA((HWND)wParam, characterName, sizeof(characterName));
+        if (QueueIncomingMissionPacket(pData->lpData, pData->cbData, characterName))
+            puSendAppMessage(CSAM_NEWMISSIONS, 0);
         break;
+    }
     default:
         return DefWindowProc( hWnd, msg, wParam, lParam );
     }
