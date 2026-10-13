@@ -57,30 +57,20 @@ static HWND FindAOCommandWindow(DWORD processId)
     return context.result;
 }
 
-extern "C" BOOL SendAIMissionCommand(DWORD command, DWORD difficulty, DWORD missionId)
+extern "C" BOOL SendAIMissionCommand(DWORD command, DWORD difficulty,
+    DWORD missionId, HWND clientWindow, DWORD clientProcessId)
 {
-    struct ClientSearch {
-        HWND window;
-        DWORD processId;
-        int count;
-    } client = { NULL, 0, 0 };
-
-    EnumWindows([](HWND window, LPARAM parameter) -> BOOL {
-        ClientSearch* search = reinterpret_cast<ClientSearch*>(parameter);
-        char className[64] = "";
-        GetClassNameA(window, className, sizeof(className));
-        if (strcmp(className, "Anarchy client") == 0) {
-            GetWindowThreadProcessId(window, &search->processId);
-            search->window = window;
-            search->count++;
-        }
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(&client));
-
-    if (client.count != 1 || !client.processId)
+    char className[64] = "";
+    DWORD windowProcessId = 0;
+    if (!clientWindow || !clientProcessId || !IsWindow(clientWindow) ||
+        !GetClassNameA(clientWindow, className, sizeof(className)) ||
+        strcmp(className, "Anarchy client") != 0)
+        return FALSE;
+    GetWindowThreadProcessId(clientWindow, &windowProcessId);
+    if (windowProcessId != clientProcessId)
         return FALSE;
 
-    HWND commandWindow = FindAOCommandWindow(client.processId);
+    HWND commandWindow = FindAOCommandWindow(clientProcessId);
     if (!commandWindow)
         return FALSE;
 
@@ -314,6 +304,9 @@ LRESULT CALLBACK HookWndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam 
             CSAIMissionEvent* event = (CSAIMissionEvent*)malloc(sizeof(*event));
             if (event) {
                 memcpy(event, pData->lpData, sizeof(*event));
+                event->clientWindow = (HWND)wParam;
+                GetWindowThreadProcessId(event->clientWindow,
+                    &event->clientProcessId);
                 puSendAppMessage(CSAM_AI_EVENT, (PUU32)event);
             } else {
                 WriteLog("Could not allocate an AI mission event.");

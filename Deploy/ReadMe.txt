@@ -93,7 +93,7 @@ deletes that mission and restarts the officer dialogue. When both filters are
 enabled, both must match. AI mission selection ignores rewards, items, and XP.
 Use one AO client, stop the Buying Agent, and target the officer before
 starting. The native AOHook bridge targets Project Rubika client 18.4; live
-validation is required before relying on automated dialogue or mission deletion.
+validation is required before relying on dialogue handling or mission deletion.
 
 The "item list" tab shows a list where you can enter substring to
 search among item names. Ex: "battle suit", "hand axe", etc.

@@ -54,6 +54,8 @@ PUU32 puTextEntryClassHandler( PULID _Object, PULID _Class, void* _pData, PUU32 
 			pData->Min = 0;
 			pData->Max = 100;
 			pData->Format = PUFORMAT_DECIMAL;
+			pData->ConfiguredMinWidth = 0;
+			pData->ConfiguredMaxWidth = 0;
 
 			puSetAttribute( _Object, PUA_CONTROL_ACTIVEWEAK, TRUE );
 			puSetAttribute( _Object, PUA_CONTROL_FRAME, PUFRAME_TEXTENTRY );
@@ -83,17 +85,17 @@ PUU32 puTextEntryClassHandler( PULID _Object, PULID _Class, void* _pData, PUU32 
 				puTextSize( _Param1, " ", 0, &Rect );
 
 				/* Min width */
-				MinWidth = puGetAttribute( _Object, PUA_CONTROL_MINWIDTH );
+				MinWidth = pData->ConfiguredMinWidth;
 				if( MinWidth < 40 )
 					MinWidth = 40;
-				puSetAttribute( _Object, PUA_CONTROL_MINWIDTH, MinWidth );
+				puDoSuperMethod( _Object, _Class, PUM_SET, PUA_CONTROL_MINWIDTH, MinWidth );
 
-				/* No max width */
-				puSetAttribute( _Object, PUA_CONTROL_MAXWIDTH, 0 );
+				/* Max width */
+				puDoSuperMethod( _Object, _Class, PUM_SET, PUA_CONTROL_MAXWIDTH, pData->ConfiguredMaxWidth );
 
 				/* Fixed height */
-				puSetAttribute( _Object, PUA_CONTROL_MINHEIGHT, Rect.Height );
-				puSetAttribute( _Object, PUA_CONTROL_MAXHEIGHT, Rect.Height );
+				puDoSuperMethod( _Object, _Class, PUM_SET, PUA_CONTROL_MINHEIGHT, Rect.Height );
+				puDoSuperMethod( _Object, _Class, PUM_SET, PUA_CONTROL_MAXHEIGHT, Rect.Height );
 
 				puDoSuperMethod( _Object, _Class, _MethodID, _Param1, _Param2 ); 
 			}
@@ -164,6 +166,14 @@ PUU32 puTextEntrySetAttr( PULID _Object, PULID _Class, void* _pData, PUU32 _Attr
 
 	switch( _Attr )
 	{
+		case PUA_CONTROL_MINWIDTH:
+			pData->ConfiguredMinWidth = _Val;
+			break;
+
+		case PUA_CONTROL_MAXWIDTH:
+			pData->ConfiguredMaxWidth = _Val;
+			break;
+
 		case PUA_TEXTENTRY_BUFFERSIZE:
 			{
 				PUU8* pNewBuffer;

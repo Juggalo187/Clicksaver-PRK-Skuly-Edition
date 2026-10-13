@@ -23,6 +23,8 @@ typedef struct
 	PUU32	bHilight;
 	PUU32	bNumeric;
 	PUU32	Value, Min, Max, Format;
+	PUU32	ConfiguredMinWidth;
+	PUU32	ConfiguredMaxWidth;
 } pusTextEntryClassData;
 
 PUU32 puTextEntryClassHandler( PULID _Object, PULID _Class, void* _pData, PUU32 _MethodID, PUU32 _Param1, PUU32 _Param2 );

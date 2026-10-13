@@ -1232,9 +1232,15 @@ PUU32 MissionParse( PULID _Object, MissionClassData* _pData, PUU8* _pMissionData
     pPrevCol = _pData->pCol;
     if( NumItems < 2 ) _pData->pCol = _pData->pSingleCol;
     else {
+        PULID foldObj;
+        PUU32 desiredFolded;
         _pData->pCol = _pData->pTeamCol;
-        puSetAttribute( puGetObjectFromCollection( _pData->pCol, FOLD ), PUA_FOLD_FOLDED,
-            puGetAttribute( puGetObjectFromCollection( g_pCol, CS_EXPAND_CB ), PUA_CHECKBOX_CHECKED ) ? FALSE : TRUE );
+        foldObj = puGetObjectFromCollection( _pData->pCol, FOLD );
+        if( foldObj ) {
+            desiredFolded = puGetAttribute( puGetObjectFromCollection( g_pCol, CS_EXPAND_CB ), PUA_CHECKBOX_CHECKED ) ? FALSE : TRUE;
+            if( puGetAttribute( foldObj, PUA_FOLD_FOLDED ) != desiredFolded )
+                puSetAttribute( foldObj, PUA_FOLD_FOLDED, desiredFolded );
+        }
     }
 
     if( !g_BuyingAgentCount || g_bForceUIRefresh ) {

@@ -41,7 +41,9 @@ static PUU32 puComboboxColDef[]=
 		PUM_ADDNOTIFICATION,
 			PUNOTIFY_CONDITION_ATTREQUALS, PUA_WINDOW_CLOSE, TRUE,
 			PUNOTIFY_ACTION_SET, COMBOBOX_WINDOW, PUA_WINDOW_OPENED, FALSE,
-	0
+	0,
+
+	PU_ACTION_END
 };
 
 PUU32 puComboBoxClassHandler( PULID _Object, PULID _Class, void* _pData, PUU32 _MethodID, PUU32 _Param1, PUU32 _Param2 )
@@ -65,6 +67,7 @@ PUU32 puComboBoxClassHandler( PULID _Object, PULID _Class, void* _pData, PUU32 _
 				pData->Listview = puGetObjectFromCollection( pData->pCol, COMBOBOX_LISTVIEW );
 			}
 
+			if( pData->Listview )
 			{
 				PUU32 Notify[5];
 

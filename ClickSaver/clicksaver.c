@@ -532,6 +532,116 @@ int g_ExitProximityRadius = 200;
 static int g_AIMissionActive = 0;
 static DWORD g_AIMissionDifficulty = CS_AI_DIFFICULTY_EASY;
 static char g_AIMissionStatusText[192];
+#define CS_MAX_AI_MISSION_CLIENTS 128
+#define CS_AI_CLIENT_LABEL_SIZE 256
+
+typedef struct {
+    HWND window;
+    DWORD processId;
+    char label[CS_AI_CLIENT_LABEL_SIZE];
+} CSAIMissionClient;
+
+typedef struct {
+    CSAIMissionClient clients[CS_MAX_AI_MISSION_CLIENTS];
+    int count;
+    int overflow;
+} CSAIMissionClientSearch;
+
+static CSAIMissionClient g_AIMissionClients[CS_MAX_AI_MISSION_CLIENTS];
+static int g_AIMissionClientCount = 0;
+static int g_AIMissionClientListOverflow = 0;
+static HWND g_AIMissionTargetWindow = NULL;
+static DWORD g_AIMissionTargetProcessId = 0;
+
+static void SetAIMissionStatus(const char* status);
+
+static BOOL CALLBACK FindAIMissionClientsProc(HWND window, LPARAM parameter)
+{
+    CSAIMissionClientSearch* search =
+        (CSAIMissionClientSearch*)parameter;
+    char className[64] = "";
+    char title[192] = "";
+    DWORD processId = 0;
+
+    GetClassNameA(window, className, sizeof(className));
+    if (strcmp(className, "Anarchy client") != 0)
+        return TRUE;
+
+    GetWindowThreadProcessId(window, &processId);
+    if (!processId)
+        return TRUE;
+    /* AOHook's mission state is process-local, so list one window per PID. */
+    for (int i = 0; i < search->count; i++)
+        if (search->clients[i].processId == processId)
+            return TRUE;
+
+    if (search->count >= CS_MAX_AI_MISSION_CLIENTS) {
+        search->overflow = 1;
+        return FALSE;
+    }
+
+    GetWindowTextA(window, title, sizeof(title));
+    CSAIMissionClient* client = &search->clients[search->count++];
+    client->window = window;
+    client->processId = processId;
+    snprintf(client->label, sizeof(client->label), "%s [PID %lu]",
+        title[0] ? title : "Anarchy client", (unsigned long)processId);
+    return TRUE;
+}
+
+static int RefreshAIMissionClients(void)
+{
+    PULID combo = puGetObjectFromCollection(g_pCol, CS_AI_CLIENT_SELECTOR);
+    PULID table = puGetObjectFromCollection(g_pCol, CS_AI_CLIENTS_LIST);
+    CSAIMissionClientSearch search = { 0 };
+    HWND previouslySelected = NULL;
+    int selectedIndex = 0;
+    int oldSelection;
+
+    if (!combo || !table) {
+        WriteLog("Could not refresh the AO-client selector.");
+        SetAIMissionStatus("could not refresh the AO-client list");
+        return 0;
+    }
+
+    oldSelection = (int)puGetAttribute(combo, PUA_COMBOBOX_SELECTED);
+    if (oldSelection > 0 && oldSelection <= g_AIMissionClientCount)
+        previouslySelected = g_AIMissionClients[oldSelection - 1].window;
+
+    EnumWindows(FindAIMissionClientsProc, (LPARAM)&search);
+    g_AIMissionClientCount = search.count;
+    g_AIMissionClientListOverflow = search.overflow;
+    memcpy(g_AIMissionClients, search.clients,
+        search.count * sizeof(g_AIMissionClients[0]));
+
+    puDoMethod(table, PUM_TABLE_CLEAR, 0, 0);
+    puDoMethod(table, PUM_TABLE_NEWRECORD, 0, 0);
+    puDoMethod(table, PUM_TABLE_ADDRECORD, 0, 0);
+    puDoMethod(table, PUM_TABLE_SETFIELDVAL,
+        (PUU32)"Select an AO client...", 0);
+
+    for (int i = 0; i < g_AIMissionClientCount; i++) {
+        puDoMethod(table, PUM_TABLE_NEWRECORD, 0, 0);
+        puDoMethod(table, PUM_TABLE_ADDRECORD, 0, 0);
+        puDoMethod(table, PUM_TABLE_SETFIELDVAL,
+            (PUU32)g_AIMissionClients[i].label, 0);
+        if (g_AIMissionClients[i].window == previouslySelected)
+            selectedIndex = i + 1;
+    }
+    puSetAttribute(combo, PUA_COMBOBOX_TABLE, (PUU32)table);
+    puSetAttribute(combo, PUA_COMBOBOX_SELECTED, selectedIndex);
+
+    if (g_AIMissionActive)
+        return 1;
+    if (search.overflow) {
+        SetAIMissionStatus("too many AO clients to list; close some and refresh");
+    } else if (!g_AIMissionClientCount) {
+        SetAIMissionStatus("no AO clients found; start one and refresh");
+    } else {
+        SetAIMissionStatus("select the character");
+    }
+    return 1;
+}
 
 static void SetAIMissionStatus(const char* status)
 {
@@ -2175,6 +2285,7 @@ int main( int argc, char** argv )
 	g_ItemWatchList = puGetObjectFromCollection( g_pCol, CS_ITEMWATCH_LIST );
 	g_DisabledItemWatchList = puGetObjectFromCollection( g_pCol, CS_DISABLED_ITEMWATCH_LIST );
 	g_LocWatchList = puGetObjectFromCollection( g_pCol, CS_LOCWATCH_LIST );
+	RefreshAIMissionClients();
 
     GetCurrentDirectory( MAX_PATH, g_CSDir );
 
@@ -2349,6 +2460,9 @@ int main( int argc, char** argv )
                             ? CS_AI_DIFFICULTY_NORMAL : CS_AI_DIFFICULTY_HARD);
                 break;
             }
+        case CSAM_AI_REFRESH_CLIENTS:
+            RefreshAIMissionClients();
+            break;
         case CSAM_AI_START:
             {
                 int useLocations = puGetAttribute(
@@ -2388,21 +2502,39 @@ int main( int argc, char** argv )
                     SetAIMissionStatus("select exactly one difficulty");
                     break;
                 }
+                if (g_AIMissionClientListOverflow) {
+                    SetAIMissionStatus("too many AO clients to list; close some and refresh");
+                    break;
+                }
+                int selectedClient = (int)puGetAttribute(
+                    puGetObjectFromCollection(g_pCol, CS_AI_CLIENT_SELECTOR),
+                    PUA_COMBOBOX_SELECTED);
+                if (selectedClient <= 0 ||
+                    selectedClient > g_AIMissionClientCount) {
+                    SetAIMissionStatus("refresh the client list and select an AO character");
+                    break;
+                }
+                g_AIMissionTargetWindow =
+                    g_AIMissionClients[selectedClient - 1].window;
+                g_AIMissionTargetProcessId =
+                    g_AIMissionClients[selectedClient - 1].processId;
                 g_AIMissionDifficulty = hasNormal
                     ? CS_AI_DIFFICULTY_NORMAL
                     : (hasHard ? CS_AI_DIFFICULTY_HARD : CS_AI_DIFFICULTY_EASY);
                 if (!SendAIMissionCommand(CS_AI_COMMAND_START,
-                    g_AIMissionDifficulty, 0)) {
-                    SetAIMissionStatus("AOHook not ready, or multiple AO clients are open");
+                    g_AIMissionDifficulty, 0, g_AIMissionTargetWindow,
+                    g_AIMissionTargetProcessId)) {
+                    SetAIMissionStatus("AOHook not ready for the selected client; refresh after it loads");
                     break;
                 }
                 g_AIMissionActive = 1;
-                SetAIMissionStatus("starting conversation with targeted officer");
+                SetAIMissionStatus("starting conversation with the selected character's officer");
                 break;
             }
         case CSAM_AI_STOP:
             if (!SendAIMissionCommand(CS_AI_COMMAND_STOP,
-                g_AIMissionDifficulty, 0)) {
+                g_AIMissionDifficulty, 0, g_AIMissionTargetWindow,
+                g_AIMissionTargetProcessId)) {
                 SetAIMissionStatus("could not reach AOHook");
             } else {
                 g_AIMissionActive = 0;
@@ -2415,6 +2547,11 @@ int main( int argc, char** argv )
                     (CSAIMissionEvent*)(PUU32)pAppMsg->Param;
                 if (!event)
                     break;
+                if (event->clientWindow != g_AIMissionTargetWindow ||
+                    event->clientProcessId != g_AIMissionTargetProcessId) {
+                    free(event);
+                    break;
+                }
                 if (event->type == CS_AI_EVENT_STATUS) {
                     g_AIMissionActive = event->state != CS_AI_STATE_STOPPED;
                     SetAIMissionStatus(event->status);
@@ -2433,9 +2570,11 @@ int main( int argc, char** argv )
                         : TRUE;
                     if (locationResult < 0) {
                         SendAIMissionCommand(CS_AI_COMMAND_STOP,
-                            g_AIMissionDifficulty, 0);
+                            g_AIMissionDifficulty, 0,
+                            g_AIMissionTargetWindow,
+                            g_AIMissionTargetProcessId);
                         g_AIMissionActive = 0;
-                        SetAIMissionStatus("could not resolve destination; mission kept, automation stopped");
+                        SetAIMissionStatus("could not resolve destination; mission kept, stopped");
                     } else {
                         int locationMatches = !useLocations || locationResult > 0;
                         const char* matchedExit = useExits
@@ -2447,9 +2586,13 @@ int main( int argc, char** argv )
                             : CS_AI_COMMAND_REJECT_MISSION;
 
                         if (!SendAIMissionCommand(command,
-                            g_AIMissionDifficulty, event->missionId)) {
+                            g_AIMissionDifficulty, event->missionId,
+                            g_AIMissionTargetWindow,
+                            g_AIMissionTargetProcessId)) {
                             SendAIMissionCommand(CS_AI_COMMAND_STOP,
-                                g_AIMissionDifficulty, 0);
+                                g_AIMissionDifficulty, 0,
+                                g_AIMissionTargetWindow,
+                                g_AIMissionTargetProcessId);
                             g_AIMissionActive = 0;
                             SetAIMissionStatus("could not return the destination decision to AOHook");
                         } else if (command == CS_AI_COMMAND_ACCEPT_MISSION) {

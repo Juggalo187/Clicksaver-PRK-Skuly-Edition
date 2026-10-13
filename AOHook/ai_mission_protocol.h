@@ -52,6 +52,8 @@ typedef struct CSAIMissionEvent
     DWORD state;
     DWORD missionId;
     DWORD zoneId;
+    HWND clientWindow;
+    DWORD clientProcessId;
     float x;
     float y;
     char status[160];

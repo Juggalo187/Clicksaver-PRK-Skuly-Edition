@@ -219,7 +219,10 @@ enum
     CS_AI_DIFFICULTY_HARD_CONTROL,
     CS_AI_USE_LOCATIONS,
     CS_AI_USE_EXITS,
-    CS_AI_STATUS
+    CS_AI_STATUS,
+    CS_AI_CLIENTS_LIST,
+    CS_AI_CLIENT_SELECTOR,
+    CS_AI_CLIENT_REFRESH
 };
 
 enum
@@ -269,7 +272,8 @@ enum
     CSAM_AI_START,
     CSAM_AI_STOP,
     CSAM_AI_EVENT,
-    CSAM_ITEM_NAME_CACHE_READY
+    CSAM_ITEM_NAME_CACHE_READY,
+    CSAM_AI_REFRESH_CLIENTS
 };
 
 extern PULID g_ItemWatchList;
@@ -303,7 +307,8 @@ int HasAIMissionLocationRules(void);
 #ifdef __cplusplus
 extern "C" {
 #endif
-BOOL SendAIMissionCommand(DWORD command, DWORD difficulty, DWORD missionId);
+BOOL SendAIMissionCommand(DWORD command, DWORD difficulty, DWORD missionId,
+    HWND clientWindow, DWORD clientProcessId);
 #ifdef __cplusplus
 }
 #endif

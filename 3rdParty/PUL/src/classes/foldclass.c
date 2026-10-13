@@ -60,13 +60,19 @@ PUU32 puFoldClassHandler( PULID _Object, PULID _Class, void* _pData, PUU32 _Meth
 					break;
 
 				case PUA_FOLD_HILIGHT:
-					pData->bHilighted = _Param2;
-					puDoMethod( _Object, PUM_CONTROL_REDRAWINNER, 0, 0 );
+					if( pData->bHilighted != ( PUU32 )_Param2 )
+					{
+						pData->bHilighted = _Param2;
+						puDoMethod( _Object, PUM_CONTROL_REDRAWINNER, 0, 0 );
+					}
 					break;
 
 				case PUA_FOLD_FOLDED:
-					pData->bFolded = _Param2;
-					puDoMethod( _Object, PUM_CONTROL_RECALC, 0, 0 );
+					if( pData->bFolded != ( PUU32 )_Param2 )
+					{
+						pData->bFolded = _Param2;
+						puDoMethod( _Object, PUM_CONTROL_RECALC, 0, 0 );
+					}
 					break;
 			}
 			return puDoSuperMethod( _Object, _Class, _MethodID, _Param1, _Param2 );
