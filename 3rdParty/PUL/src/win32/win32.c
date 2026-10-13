@@ -4,6 +4,7 @@
 
 #include <pul/pul.h>
 #include <windows.h>
+#include <stdio.h>
 #include "../include/globals.h"
 #include "win32.h"
 
@@ -407,9 +408,6 @@ LRESULT CALLBACK puWndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
 				puDoMethod( WindowObj, PUM_WINDOW_PRELAYOUT, 0, 0 );
 
 				GetClientRect( hWnd, &Rect );
-
-				if( puGetAttribute( WindowObj, PUA_CONTROL_MINHEIGHT ) != ( PUU32 ) Rect.bottom )
-					puCheckWindowSize( ( PUU32 )hWnd );
 
 				puDoMethod( WindowObj, PUM_WINDOW_LAYOUT, 0, 0 );
 			}

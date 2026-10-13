@@ -28,11 +28,19 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "ClickSaver.h"
 #include "excluded_items.h"
 
-static void BuildItemIndex(void);
+static int BuildItemIndex(void);
 static int FindItemInDescriptionFromCache(const PUU8* desc, unsigned long descLen, PUU8* outName);
 
 static char **g_itemNames = NULL;
 static size_t g_numItemNames = 0;
+void FreeItemNameCache(void);
+
+static int CompareItemNames(const void *left, const void *right)
+{
+    const char *const *leftName = (const char *const *)left;
+    const char *const *rightName = (const char *const *)right;
+    return strcmp(*leftName, *rightName);
+}
 
 typedef struct ItemIndexEntry {
     char* firstWord;
@@ -51,6 +59,7 @@ static PUU32 g_bRewardMatched = 0;
 extern PULID g_DisabledItemWatchList;
 extern const char* GetMatchedExitName(int zoneId, float x, float y);
 extern sqlite3* g_pSQLite;
+void MissionPF(PUS32 playfieldId, PUU8* playfieldName);
 
 
 static int IsItemExcluded(const char *name) {
@@ -296,18 +305,25 @@ static void NormalizeString(const char* src, char* dst, size_t dstSize) {
     dst[i] = '\0';
 }
 
-void BuildItemNameCache(const char *filename) {
+int BuildItemNameCache(const char *filename, sqlite3 *database,
+    HANDLE cancelEvent) {
     sqlite3_stmt *stmt;
     const char *sql = "SELECT data FROM rdb_1000020";
-    if (sqlite3_prepare_v2(g_pSQLite, sql, -1, &stmt, NULL) != SQLITE_OK)
-        return;
+    int result = 0;
+    if (!filename || !database ||
+        sqlite3_prepare_v2(database, sql, -1, &stmt, NULL) != SQLITE_OK)
+        return 0;
 
     size_t total_len = 0;
     size_t capacity = 1024 * 1024;
     char *all = malloc(capacity);
-    if (!all) { sqlite3_finalize(stmt); return; }
+    if (!all) { sqlite3_finalize(stmt); return 0; }
 
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
+    int stepResult;
+    while ((stepResult = sqlite3_step(stmt)) == SQLITE_ROW) {
+        if (cancelEvent &&
+            WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0)
+            goto cleanup;
         const void *blob = sqlite3_column_blob(stmt, 0);
         int blobSize = sqlite3_column_bytes(stmt, 0);
         char name[256];
@@ -317,14 +333,23 @@ void BuildItemNameCache(const char *filename) {
             }
             size_t len = strlen(name) + 1;
             if (total_len + len > capacity) {
-                capacity *= 2;
-                all = realloc(all, capacity);
-                if (!all) goto cleanup;
+                size_t newCapacity = capacity;
+                while (total_len + len > newCapacity) {
+                    if (newCapacity > ((size_t)-1) / 2)
+                        goto cleanup;
+                    newCapacity *= 2;
+                }
+                char *larger = realloc(all, newCapacity);
+                if (!larger) goto cleanup;
+                all = larger;
+                capacity = newCapacity;
             }
             memcpy(all + total_len, name, len);
             total_len += len;
         }
     }
+    if (stepResult != SQLITE_DONE)
+        goto cleanup;
 
     uLongf compressed_size = total_len + (total_len >> 3) + (total_len >> 6) + 13;
     unsigned char *compressed = malloc(compressed_size);
@@ -338,16 +363,20 @@ void BuildItemNameCache(const char *filename) {
 
     FILE *f = fopen(filename, "wb");
     if (f) {
-        fwrite(&total_len, 4, 1, f);
-        fwrite(&compressed_size, 4, 1, f);
-        fwrite(compressed, 1, compressed_size, f);
-        fclose(f);
+        BOOL writeSucceeded = fwrite(&total_len, 4, 1, f) == 1 &&
+            fwrite(&compressed_size, 4, 1, f) == 1 &&
+            fwrite(compressed, 1, compressed_size, f) == compressed_size;
+        int closeResult = fclose(f);
+        result = writeSucceeded && closeResult == 0;
+        if (!result)
+            DeleteFileA(filename);
     }
 
     free(compressed);
 cleanup:
     free(all);
     sqlite3_finalize(stmt);
+    return result;
 }
 
 int LoadItemNameCache(const char *cacheFilePath) {
@@ -393,7 +422,8 @@ int LoadItemNameCache(const char *cacheFilePath) {
     for (size_t i = 0; i < origSize; i++) {
         if (data[i] == '\0') count++;
     }
-    g_itemNames = (char**)malloc(count * sizeof(char*));
+    FreeItemNameCache();
+    g_itemNames = (char**)calloc(count ? count : 1, sizeof(char*));
     if (!g_itemNames) { free(data); return 0; }
 
     size_t idx = 0;
@@ -401,87 +431,172 @@ int LoadItemNameCache(const char *cacheFilePath) {
     for (size_t i = 0; i < origSize; i++) {
         if (data[i] == '\0') {
             if (start < (const char*)(data + i)) {
-                g_itemNames[idx++] = _strdup(start);
+                g_itemNames[idx] = _strdup(start);
+                if (!g_itemNames[idx]) {
+                    g_numItemNames = idx;
+                    free(data);
+                    FreeItemNameCache();
+                    return 0;
+                }
+                g_numItemNames = ++idx;
             }
             start = (const char*)(data + i + 1);
         }
     }
-    g_numItemNames = idx;
     free(data);
 
     qsort(g_itemNames, g_numItemNames, sizeof(char*),
-          (int(*)(const void*, const void*))strcmp);
+          CompareItemNames);
 		  
-		  BuildItemIndex();
+		  if (!BuildItemIndex()) {
+		      FreeItemNameCache();
+		      return 0;
+		  }
 
-    return 1;
+		  return 1;
 }
 
-static void BuildItemIndex(void) {
-    if (!g_itemNames || g_numItemNames == 0) return;
+static void GetNormalizedFirstWord(const char *fullName, char* normalized,
+		  size_t normalizedSize)
+{
+		  char firstWord[256];
+		  const char* p = fullName;
+		  size_t length = 0;
+		  while (*p && *p != ' ' && length < sizeof(firstWord) - 1)
+		      firstWord[length++] = *p++;
+		  firstWord[length] = '\0';
+		  NormalizeString(firstWord, normalized, normalizedSize);
+}
 
-    for (int i = 0; i < g_itemIndexSize; i++) {
-        free(g_itemIndex[i].firstWord);
-        free((void*)g_itemIndex[i].items);
+static size_t HashFirstWord(const char *word)
+{
+		  size_t hash = 2166136261u;
+		  while (*word) {
+		      hash ^= (unsigned char)*word++;
+		      hash *= 16777619u;
+		  }
+		  return hash;
+}
+
+static int BuildItemIndex(void) {
+		  if (!g_itemNames || g_numItemNames == 0 ||
+		      g_numItemNames > ((size_t)-1) / 2)
+		      return 0;
+
+		  for (int i = 0; i < g_itemIndexSize; i++) {
+		      free(g_itemIndex[i].firstWord);
+		      free((void*)g_itemIndex[i].items);
     }
     free(g_itemIndex);
     g_itemIndex = NULL;
     g_itemIndexSize = 0;
-    
+
     struct TempEntry {
         char* firstWord;
         const char** items;
-        int count;
-        int capacity;
-    } *temp = NULL;
-    int tempSize = 0;
-    
+        size_t count;
+        size_t next;
+    };
+    struct TempEntry *temp = (struct TempEntry*)calloc(
+        g_numItemNames, sizeof(*temp));
+    size_t hashCapacity = 1;
+    size_t targetCapacity = g_numItemNames * 2;
+    while (hashCapacity < targetCapacity) {
+        if (hashCapacity > ((size_t)-1) / 2) {
+            free(temp);
+            return 0;
+        }
+        hashCapacity *= 2;
+    }
+    size_t *slots = (size_t*)calloc(hashCapacity, sizeof(*slots));
+    if (!temp || !slots) {
+        free(temp);
+        free(slots);
+        return 0;
+    }
+    size_t tempSize = 0;
+
     for (size_t i = 0; i < g_numItemNames; i++) {
         const char* fullName = g_itemNames[i];
-        char firstWord[256];
-        const char* p = fullName;
-        size_t wlen = 0;
-        while (*p && *p != ' ' && wlen < sizeof(firstWord)-1) {
-            firstWord[wlen++] = *p++;
-        }
-        firstWord[wlen] = '\0';
         char normFirst[256];
-        NormalizeString(firstWord, normFirst, sizeof(normFirst));
+        GetNormalizedFirstWord(fullName, normFirst, sizeof(normFirst));
         if (normFirst[0] == '\0') continue;
-        
-        int idx = -1;
-        for (int j = 0; j < tempSize; j++) {
-            if (strcmp(temp[j].firstWord, normFirst) == 0) {
-                idx = j;
-                break;
-            }
-        }
-        if (idx == -1) {
-            temp = realloc(temp, (tempSize+1) * sizeof(struct TempEntry));
-            temp[tempSize].firstWord = _strdup(normFirst);
-            temp[tempSize].items = NULL;
-            temp[tempSize].count = 0;
-            temp[tempSize].capacity = 0;
-            idx = tempSize;
+
+        size_t slot = HashFirstWord(normFirst) & (hashCapacity - 1);
+        while (slots[slot] &&
+            strcmp(temp[slots[slot] - 1].firstWord, normFirst) != 0)
+            slot = (slot + 1) & (hashCapacity - 1);
+        size_t index;
+        if (!slots[slot]) {
+            index = tempSize;
+            temp[index].firstWord = _strdup(normFirst);
+            if (!temp[index].firstWord)
+                goto failed;
+            slots[slot] = index + 1;
             tempSize++;
+        } else {
+            index = slots[slot] - 1;
         }
-		
-        struct TempEntry* e = &temp[idx];
-        if (e->count >= e->capacity) {
-            e->capacity = e->capacity ? e->capacity * 2 : 4;
-            e->items = realloc((void*)e->items, e->capacity * sizeof(const char*));
-        }
-        e->items[e->count++] = fullName;
+        if (temp[index].count == (size_t)-1)
+            goto failed;
+        temp[index].count++;
     }
 
-    g_itemIndexSize = tempSize;
-    g_itemIndex = malloc(g_itemIndexSize * sizeof(ItemIndexEntry));
-    for (int i = 0; i < tempSize; i++) {
+    g_itemIndex = (ItemIndexEntry*)calloc(tempSize, sizeof(*g_itemIndex));
+    if (!g_itemIndex)
+        goto failed;
+    for (size_t i = 0; i < tempSize; i++) {
+        temp[i].items = (const char**)malloc(
+            temp[i].count * sizeof(*temp[i].items));
+        if (!temp[i].items)
+            goto failed;
+    }
+
+    for (size_t i = 0; i < g_numItemNames; i++) {
+        const char* fullName = g_itemNames[i];
+        char normFirst[256];
+        GetNormalizedFirstWord(fullName, normFirst, sizeof(normFirst));
+        if (normFirst[0] == '\0') continue;
+        size_t slot = HashFirstWord(normFirst) & (hashCapacity - 1);
+        while (slots[slot] &&
+            strcmp(temp[slots[slot] - 1].firstWord, normFirst) != 0)
+            slot = (slot + 1) & (hashCapacity - 1);
+        if (slots[slot]) {
+            struct TempEntry *entry = &temp[slots[slot] - 1];
+            entry->items[entry->next++] = fullName;
+        }
+    }
+
+    for (size_t i = 0; i < tempSize; i++) {
+        if (temp[i].count > 0x7fffffffU)
+            goto failed;
         g_itemIndex[i].firstWord = temp[i].firstWord;
         g_itemIndex[i].items = temp[i].items;
-        g_itemIndex[i].count = temp[i].count;
+        g_itemIndex[i].count = (int)temp[i].count;
+        temp[i].firstWord = NULL;
+        temp[i].items = NULL;
+    }
+    g_itemIndexSize = (int)tempSize;
+    free(temp);
+    free(slots);
+    return 1;
+
+failed:
+    if (g_itemIndex) {
+        for (size_t i = 0; i < tempSize; i++) {
+            free(g_itemIndex[i].firstWord);
+            free((void*)g_itemIndex[i].items);
+        }
+        free(g_itemIndex);
+        g_itemIndex = NULL;
+    }
+    for (size_t i = 0; i < tempSize; i++) {
+        free(temp[i].firstWord);
+        free((void*)temp[i].items);
     }
     free(temp);
+    free(slots);
+    return 0;
 }
 
 void FreeItemNameCache(void) {
@@ -525,7 +640,7 @@ int IsRealItemNameCI(const char *name) {
 static int IsRealItemName(const char *name) {
     if (!g_itemNames || !name || !*name) return 0;
     return bsearch(&name, g_itemNames, g_numItemNames, sizeof(char*),
-                   (int(*)(const void*, const void*))strcmp) != NULL;
+                   CompareItemNames) != NULL;
 }
 
 void LogMissionDescription(PUU32 missionType, const char *findItem,
@@ -2005,6 +2120,121 @@ PUU32 LocationMatch( PUU8* LocationName, PUU8* LocationSearch )
         }
     }
 
+    return FALSE;
+}
+
+static int IsSafeAIMissionLocationSearch(const char* locationSearch)
+{
+    const char* open;
+    const char* comma;
+    const char* close;
+    const char* firstHyphen;
+    const char* secondHyphen;
+    const char* segmentEnd;
+    size_t length;
+
+    if (!locationSearch)
+        return FALSE;
+    length = strlen(locationSearch);
+    if (length >= 256)
+        return FALSE;
+    open = strchr(locationSearch, '(');
+    if (!open)
+        return TRUE;
+    close = strchr(open + 1, ')');
+    if (!close)
+        close = locationSearch + length;
+    comma = (const char*)memchr(open + 1, ',', (size_t)(close - open - 1));
+    if (comma)
+    {
+        if (memchr(comma + 1, ',', (size_t)(close - comma - 1)))
+            return FALSE;
+        firstHyphen = (const char*)memchr(open + 1, '-',
+            (size_t)(comma - open - 1));
+        secondHyphen = (const char*)memchr(comma + 1, '-',
+            (size_t)(close - comma - 1));
+        if ((firstHyphen && memchr(firstHyphen + 1, '-',
+                (size_t)(comma - firstHyphen - 1))) ||
+            (secondHyphen && memchr(secondHyphen + 1, '-',
+                (size_t)(close - secondHyphen - 1))))
+            return FALSE;
+        segmentEnd = firstHyphen ? firstHyphen : comma;
+        if ((size_t)(segmentEnd - (open + 1)) >= 20 ||
+            (firstHyphen && (size_t)(comma - (firstHyphen + 1)) >= 20) ||
+            (size_t)((secondHyphen ? secondHyphen : close) - (comma + 1)) >= 20 ||
+            (secondHyphen && (size_t)(close - (secondHyphen + 1)) >= 20))
+            return FALSE;
+    }
+    else
+    {
+        firstHyphen = (const char*)memchr(open + 1, '-',
+            (size_t)(close - open - 1));
+        if (firstHyphen && memchr(firstHyphen + 1, '-',
+            (size_t)(close - firstHyphen - 1)))
+            return FALSE;
+        segmentEnd = firstHyphen ? firstHyphen : close;
+        if ((size_t)(segmentEnd - (open + 1)) >= 20 ||
+            (firstHyphen && (size_t)(close - (firstHyphen + 1)) >= 20))
+            return FALSE;
+    }
+    return TRUE;
+}
+
+int CheckAIMissionLocationMatch(int zoneId, float x, float y,
+    char* matchedLocation, int matchedLocationSize)
+{
+    char playfieldName[256] = { 0 };
+    char missionLocation[320] = { 0 };
+    PUU32 record;
+
+    if (matchedLocation && matchedLocationSize > 0)
+        matchedLocation[0] = '\0';
+    if (!g_LocWatchList)
+        return -1;
+
+    MissionPF(zoneId, (PUU8*)playfieldName);
+    if (!playfieldName[0])
+        return -1;
+    snprintf(missionLocation, sizeof(missionLocation), "%s (%.1f, %.1f)",
+        playfieldName, x, y);
+    if (!IsSafeAIMissionLocationSearch(missionLocation))
+        return -1;
+
+    record = puDoMethod(g_LocWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+    while (record)
+    {
+        PUU8* locationSearch = (PUU8*)puDoMethod(
+            g_LocWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
+        if (locationSearch && locationSearch[0] && locationSearch[0] != '#' &&
+            IsSafeAIMissionLocationSearch((char*)locationSearch) &&
+            LocationMatch((PUU8*)missionLocation, locationSearch))
+        {
+            if (matchedLocation && matchedLocationSize > 0)
+                snprintf(matchedLocation, matchedLocationSize, "%s",
+                    (char*)locationSearch);
+            return TRUE;
+        }
+        record = puDoMethod(g_LocWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
+    }
+    return FALSE;
+}
+
+int HasAIMissionLocationRules(void)
+{
+    PUU32 record;
+
+    if (!g_LocWatchList)
+        return FALSE;
+    record = puDoMethod(g_LocWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+    while (record)
+    {
+        PUU8* locationSearch = (PUU8*)puDoMethod(
+            g_LocWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
+        if (locationSearch && locationSearch[0] && locationSearch[0] != '#' &&
+            IsSafeAIMissionLocationSearch((char*)locationSearch))
+            return TRUE;
+        record = puDoMethod(g_LocWatchList, PUM_TABLE_GETNEXTRECORD, record, 0);
+    }
     return FALSE;
 }
 

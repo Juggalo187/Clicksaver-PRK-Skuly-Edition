@@ -25,6 +25,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <cmath>
 #include <climits>
 #include <string>
+#include <TlHelp32.h>
 #include "clicksaver.h"
 
 extern "C" HANDLE g_Mutex;
@@ -32,52 +33,117 @@ extern "C" char g_CSDir[ MAX_PATH ];
 extern "C" char g_CurrentPacket[ 65536 ];
 extern "C" HANDLE g_hThreadExitEvent;
 
+static HWND FindAOCommandWindow(DWORD processId)
+{
+    struct SearchContext {
+        DWORD processId;
+        HWND result;
+    } context = { processId, NULL };
+
+    EnumWindows([](HWND window, LPARAM parameter) -> BOOL {
+        SearchContext* search = reinterpret_cast<SearchContext*>(parameter);
+        char className[64] = "";
+        DWORD windowProcessId = 0;
+        GetClassNameA(window, className, sizeof(className));
+        if (strcmp(className, "ClickSaverAICommandWindowClass") == 0) {
+            GetWindowThreadProcessId(window, &windowProcessId);
+            if (windowProcessId == search->processId) {
+                search->result = window;
+                return FALSE;
+            }
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&context));
+    return context.result;
+}
+
+extern "C" BOOL SendAIMissionCommand(DWORD command, DWORD difficulty, DWORD missionId)
+{
+    struct ClientSearch {
+        HWND window;
+        DWORD processId;
+        int count;
+    } client = { NULL, 0, 0 };
+
+    EnumWindows([](HWND window, LPARAM parameter) -> BOOL {
+        ClientSearch* search = reinterpret_cast<ClientSearch*>(parameter);
+        char className[64] = "";
+        GetClassNameA(window, className, sizeof(className));
+        if (strcmp(className, "Anarchy client") == 0) {
+            GetWindowThreadProcessId(window, &search->processId);
+            search->window = window;
+            search->count++;
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&client));
+
+    if (client.count != 1 || !client.processId)
+        return FALSE;
+
+    HWND commandWindow = FindAOCommandWindow(client.processId);
+    if (!commandWindow)
+        return FALSE;
+
+    CSAIMissionCommand payload = { command, difficulty, missionId };
+    COPYDATASTRUCT data = { 0 };
+    DWORD_PTR result = 0;
+    data.dwData = CS_AI_COMMAND_COPYDATA;
+    data.cbData = sizeof(payload);
+    data.lpData = &payload;
+    HWND clickSaverWindow = FindWindowA(
+        "ClickSaverHookWindowClass", "ClickSaverHookWindow");
+    if (!clickSaverWindow ||
+        !SendMessageTimeoutA(commandWindow, WM_COPYDATA,
+            (WPARAM)clickSaverWindow, (LPARAM)&data,
+            SMTO_ABORTIFHUNG, 1000, &result))
+        return FALSE;
+    return result != 0;
+}
+
 static DWORD RemoteCall(HANDLE hProcess, LPVOID pFunction, LPVOID pParam, DWORD dwTimeout = 5000)
 {
     HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0, (LPTHREAD_START_ROUTINE)pFunction, pParam, 0, NULL);
     if (!hThread)
         return 0;
     DWORD exitCode = 0;
-    WaitForSingleObject(hThread, dwTimeout);
-    GetExitCodeThread(hThread, &exitCode);
+    if (WaitForSingleObject(hThread, dwTimeout) != WAIT_OBJECT_0 ||
+        !GetExitCodeThread(hThread, &exitCode))
+        exitCode = 0;
     CloseHandle(hThread);
     return exitCode;
 }
 
 static HMODULE GetRemoteModuleHandle(DWORD processId, const char* moduleName)
 {
-    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processId);
-    if (!hProcess)
+    HANDLE snapshot = INVALID_HANDLE_VALUE;
+    for (int attempt = 0; attempt < 5; attempt++)
+    {
+        snapshot = CreateToolhelp32Snapshot(
+            TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processId);
+        if (snapshot != INVALID_HANDLE_VALUE ||
+            GetLastError() != ERROR_BAD_LENGTH)
+            break;
+        Sleep(10);
+    }
+    if (snapshot == INVALID_HANDLE_VALUE)
         return NULL;
 
-    size_t nameLen = strlen(moduleName) + 1;
-    LPVOID pRemoteName = VirtualAllocEx(hProcess, NULL, nameLen, MEM_COMMIT, PAGE_READWRITE);
-    if (!pRemoteName)
+    MODULEENTRY32 module = { 0 };
+    module.dwSize = sizeof(module);
+    HMODULE result = NULL;
+    if (Module32First(snapshot, &module))
     {
-        CloseHandle(hProcess);
-        return NULL;
+        do
+        {
+            if (_stricmp(module.szModule, moduleName) == 0)
+            {
+                result = module.hModule;
+                break;
+            }
+        } while (Module32Next(snapshot, &module));
     }
-    WriteProcessMemory(hProcess, pRemoteName, moduleName, nameLen, NULL);
-
-    HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
-    if (!kernel32)
-    {
-        VirtualFreeEx(hProcess, pRemoteName, 0, MEM_RELEASE);
-        CloseHandle(hProcess);
-        return NULL;
-    }
-    FARPROC pGetModuleHandle = GetProcAddress(kernel32, "GetModuleHandleA");
-    if (!pGetModuleHandle)
-    {
-        VirtualFreeEx(hProcess, pRemoteName, 0, MEM_RELEASE);
-        CloseHandle(hProcess);
-        return NULL;
-    }
-	
-    DWORD result = RemoteCall(hProcess, pGetModuleHandle, pRemoteName);
-    VirtualFreeEx(hProcess, pRemoteName, 0, MEM_RELEASE);
-    CloseHandle(hProcess);
-    return (HMODULE)result;
+    CloseHandle(snapshot);
+    return result;
 }
 
 static void UnloadAOHook(DWORD processId)
@@ -139,44 +205,68 @@ bool InjectDLL( DWORD ProcessID, std::string const& dllName )
         //LOG("No process ID specified.");
         return false;
     }
-
     SetLastError( 0 );
-    HANDLE Proc = OpenProcess( PROCESS_ALL_ACCESS, FALSE, ProcessID );
+    HANDLE Proc = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
+        PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ,
+        FALSE, ProcessID);
     if( !Proc )
     {
         return false;
     }
     std::string dllNameA = to_ascii_copy( dllName );
-    LPVOID RemoteString = (LPVOID)VirtualAllocEx( Proc, NULL, dllNameA.length(), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE );
+    if (dllNameA.empty())
+    {
+        CloseHandle(Proc);
+        return false;
+    }
+    SIZE_T pathSize = dllNameA.length() + 1;
+    LPVOID RemoteString = VirtualAllocEx(
+        Proc, NULL, pathSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE );
     if( !RemoteString )
     {
         CloseHandle( Proc );
         return false;
     }
-    if( !WriteProcessMemory( Proc, (LPVOID)RemoteString, dllNameA.c_str(), dllNameA.length(), NULL ) )
+    SIZE_T bytesWritten = 0;
+    if( !WriteProcessMemory( Proc, RemoteString, dllNameA.c_str(),
+        pathSize, &bytesWritten ) || bytesWritten != pathSize )
     {
+        VirtualFreeEx(Proc, RemoteString, 0, MEM_RELEASE);
         CloseHandle( Proc );
         return false;
     }
     HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
     if (!kernel32)
     {
+        VirtualFreeEx(Proc, RemoteString, 0, MEM_RELEASE);
         CloseHandle(Proc);
         return false;
     }
     LPVOID LoadLibAddy = (LPVOID)GetProcAddress(kernel32, "LoadLibraryA");
     if (!LoadLibAddy)
     {
+        VirtualFreeEx(Proc, RemoteString, 0, MEM_RELEASE);
         CloseHandle(Proc);
         return false;
     }
-    if( !CreateRemoteThread( Proc, NULL, NULL, (LPTHREAD_START_ROUTINE)LoadLibAddy, (LPVOID)RemoteString, NULL, NULL ) )
+    HANDLE thread = CreateRemoteThread(Proc, NULL, 0,
+        (LPTHREAD_START_ROUTINE)LoadLibAddy, RemoteString, 0, NULL);
+    if (!thread)
     {
+        VirtualFreeEx(Proc, RemoteString, 0, MEM_RELEASE);
         CloseHandle( Proc );
         return false;
     }
+    DWORD waitResult = WaitForSingleObject(thread, 15000);
+    DWORD exitCode = 0;
+    if (waitResult == WAIT_OBJECT_0)
+    {
+        GetExitCodeThread(thread, &exitCode);
+        VirtualFreeEx(Proc, RemoteString, 0, MEM_RELEASE);
+    }
+    CloseHandle(thread);
     CloseHandle( Proc );
-    return true;
+    return waitResult == WAIT_OBJECT_0 && exitCode != 0;
 }
 
 
@@ -218,6 +308,18 @@ LRESULT CALLBACK HookWndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam 
         break;
     case WM_COPYDATA: {
         pData = (PCOPYDATASTRUCT)lParam;
+        if (pData && pData->dwData == CS_AI_EVENT_COPYDATA &&
+            pData->lpData && pData->cbData == sizeof(CSAIMissionEvent))
+        {
+            CSAIMissionEvent* event = (CSAIMissionEvent*)malloc(sizeof(*event));
+            if (event) {
+                memcpy(event, pData->lpData, sizeof(*event));
+                puSendAppMessage(CSAM_AI_EVENT, (PUU32)event);
+            } else {
+                WriteLog("Could not allocate an AI mission event.");
+            }
+            break;
+        }
         if (pData && pData->dwData == CS_ACCEPTED_MISSION_SYNC_COPYDATA)
         {
             if (pData->lpData && pData->cbData > 0)

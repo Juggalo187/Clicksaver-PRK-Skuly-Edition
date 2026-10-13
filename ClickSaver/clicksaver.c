@@ -96,7 +96,8 @@ sqlite3_stmt* g_stmtItem = NULL;
 sqlite3_stmt* g_stmtIcon = NULL;
 sqlite3_stmt* g_stmtPF = NULL;
 
-void BuildItemNameCache(const char *filename);
+int BuildItemNameCache(const char *filename, sqlite3 *database,
+    HANDLE cancelEvent);
 int LoadItemNameCache(const char *cacheFilePath);
 void FreeItemNameCache(void);
 
@@ -175,7 +176,83 @@ HANDLE g_Mutex = INVALID_HANDLE_VALUE;
 HANDLE g_Thread = INVALID_HANDLE_VALUE;
 HANDLE g_hThreadExitEvent = NULL;
 HANDLE g_hAbortEvent = NULL;
+static HANDLE g_hItemNameCacheThread = NULL;
 DWORD WINAPI HookManagerThread( void *pParam );
+
+typedef struct {
+    char cachePath[MAX_PATH];
+    char databasePath[MAX_PATH];
+    HWND notificationWindow;
+} ItemNameCacheContext;
+
+#define WM_CS_ITEM_NAME_CACHE_READY (WM_APP + 44)
+
+static void LogStartupStage(const char *stage)
+{
+    FILE *log = fopen("ClickSaverStartup.log", "a");
+    if (log)
+    {
+        SYSTEMTIME time;
+        GetLocalTime(&time);
+        fprintf(log, "%02u:%02u:%02u.%03u %s\n", time.wHour,
+            time.wMinute, time.wSecond, time.wMilliseconds, stage);
+        fclose(log);
+    }
+}
+
+static DWORD WINAPI ItemNameCacheThread(void *parameter)
+{
+    ItemNameCacheContext *context = (ItemNameCacheContext*)parameter;
+    char cachePath[MAX_PATH];
+    char databasePath[MAX_PATH];
+    HWND notificationWindow;
+    WIN32_FILE_ATTRIBUTE_DATA cacheInfo;
+    WIN32_FILE_ATTRIBUTE_DATA databaseInfo;
+    BOOL needRebuild;
+    BOOL loaded = FALSE;
+    sqlite3 *database = NULL;
+
+    LogStartupStage("item cache worker started");
+    if (!context)
+        return 0;
+    safe_strcpy(cachePath, sizeof(cachePath), context->cachePath);
+    safe_strcpy(databasePath, sizeof(databasePath), context->databasePath);
+    notificationWindow = context->notificationWindow;
+    free(context);
+
+    needRebuild = !GetFileAttributesExA(cachePath, GetFileExInfoStandard,
+        &cacheInfo) ||
+        !GetFileAttributesExA(databasePath, GetFileExInfoStandard,
+            &databaseInfo) ||
+        CompareFileTime(&databaseInfo.ftLastWriteTime,
+            &cacheInfo.ftLastWriteTime) > 0;
+
+    if (!needRebuild)
+    {
+        LogStartupStage("loading existing item-name cache");
+        loaded = LoadItemNameCache(cachePath) != 0;
+    }
+
+    if (!loaded)
+    {
+        LogStartupStage("building item-name cache from database");
+        if (sqlite3_open_v2(databasePath, &database, SQLITE_OPEN_READONLY,
+            NULL) == SQLITE_OK)
+        {
+            if (BuildItemNameCache(cachePath, database, g_hThreadExitEvent))
+                loaded = LoadItemNameCache(cachePath) != 0;
+            sqlite3_close(database);
+        }
+    }
+    LogStartupStage(loaded ? "item-name cache ready" : "item-name cache failed");
+
+    if (notificationWindow && IsWindow(notificationWindow) &&
+        (!g_hThreadExitEvent ||
+            WaitForSingleObject(g_hThreadExitEvent, 0) != WAIT_OBJECT_0))
+        PostMessageA(notificationWindow, WM_CS_ITEM_NAME_CACHE_READY,
+            loaded ? 1 : 0, 0);
+    return loaded ? 1 : 0;
+}
 
 static HBRUSH g_hDialogBgBrush = NULL;
 static HBRUSH g_hButtonBgBrush = NULL;
@@ -289,6 +366,7 @@ static size_t g_AcceptedMissionClientCapacity = 0;
 static HWND g_hAcceptedMissionsWindow = NULL;
 static HWND g_hAcceptedMissionList = NULL;
 static HWND g_hAcceptedMissionDetails = NULL;
+static HWND g_hAcceptedMissionFilter = NULL;
 static AcceptedMissionGroupView* g_AcceptedMissionGroupViews = NULL;
 static int g_AcceptedMissionGroupViewCount = 0;
 
@@ -301,6 +379,8 @@ static void ClearAcceptedMissionBuffer(void);
 static BOOL LoadAcceptedMissionStore(void);
 static BOOL SaveAcceptedMissionStore(void);
 static const char* GetAcceptedMissionLocation(const CSAcceptedMission* mission);
+static int AcceptedMissionMatchesFilter(const LoggedMission* loggedMission,
+    const char* filter);
 static void ToggleAcceptedMissionGroup(int groupIndex);
 static void PruneAcceptedMissionClients(void);
 
@@ -449,6 +529,20 @@ static ExitLocation g_Exits[] = {
 
 static int g_NumExits = sizeof(g_Exits) / sizeof(g_Exits[0]);
 int g_ExitProximityRadius = 200;
+static int g_AIMissionActive = 0;
+static DWORD g_AIMissionDifficulty = CS_AI_DIFFICULTY_EASY;
+static char g_AIMissionStatusText[192];
+
+static void SetAIMissionStatus(const char* status)
+{
+    PULID statusControl = puGetObjectFromCollection(g_pCol, CS_AI_STATUS);
+    if (!statusControl)
+        return;
+    snprintf(g_AIMissionStatusText, sizeof(g_AIMissionStatusText),
+        "Status: %s", status ? status : "unknown");
+    puSetAttribute(statusControl, PUA_TEXT_STRING,
+        (PUU32)g_AIMissionStatusText);
+}
 
 const char* GetMatchedExitName(int zoneId, float x, float y)
 {
@@ -485,6 +579,16 @@ static int IsMissionNearCheckedExit(int zoneId, float mx, float my, int radius)
 int CheckMissionNearExit(int zoneId, float x, float y)
 {
     return IsMissionNearCheckedExit(zoneId, x, y, g_ExitProximityRadius);
+}
+
+int HasCheckedAIExit(void)
+{
+    for (int i = 0; i < g_NumExits; i++) {
+        PULID checkBox = puGetObjectFromCollection(g_pCol, CS_EXIT_FIRST + i);
+        if (checkBox && puGetAttribute(checkBox, PUA_CHECKBOX_CHECKED))
+            return TRUE;
+    }
+    return FALSE;
 }
 
 void InitDialogColors(void) {
@@ -1870,6 +1974,19 @@ static int HasActiveForceAcceptItems()
 
 LRESULT CALLBACK MainWndProcHook( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData )
 {
+    if (uMsg == WM_SYSCOMMAND && (wParam & 0xFFF0) == SC_CLOSE)
+    {
+        ShowWindow(hWnd, SW_HIDE);
+        puPostAppMessage(CSAM_QUIT, 0);
+        return 0;
+    }
+
+    if (uMsg == WM_CS_ITEM_NAME_CACHE_READY)
+    {
+        puPostAppMessage(CSAM_ITEM_NAME_CACHE_READY, (PUU32)wParam);
+        return 0;
+    }
+
     if (uMsg == WM_TIMER)
     {
         if (wParam == TIMER_BUYINGAGENT)
@@ -2003,6 +2120,7 @@ static void ImportLocations(const char *filename, int replaceMode)
 
 int main( int argc, char** argv )
 {
+    LogStartupStage("main entered");
 	if( ( g_Mutex = CreateMutex( NULL, FALSE, "ClickSaver" ) ) == INVALID_HANDLE_VALUE )
     {
         DisplayErrorMessage( "Couldn't create mutex.", FALSE );
@@ -2027,11 +2145,14 @@ int main( int argc, char** argv )
     char AOExePath[ 256 ];
     DWORD dwThreadID;
     HANDLE hOrigDB;
+    BOOL itemNameCacheReady = FALSE;
+    BOOL missionPacketPending = FALSE;
 
     char DBPath[ 256 * 2 ];
 	
     SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL );
 
+    LogStartupStage("initializing PUL");
     if( !puInit() )
     {
         return -1;
@@ -2043,6 +2164,7 @@ int main( int argc, char** argv )
         return -1;
     }
 
+    LogStartupStage("creating controls");
     if( !( g_pCol = puCreateObjectCollection( g_GUIDef ) ) )
     {
         CleanUp();
@@ -2056,8 +2178,10 @@ int main( int argc, char** argv )
 
     GetCurrentDirectory( MAX_PATH, g_CSDir );
 
+    LogStartupStage("importing settings");
     ImportSettings( "LastSettings.cs" );
 	
+    LogStartupStage("loading saved missions");
 	LoadAcceptedMissionStore();
 	
 	PULID delayCtrl = puGetObjectFromCollection(g_pCol, CS_BUYINGAGENTDELAY_ENTRY);
@@ -2099,6 +2223,7 @@ int main( int argc, char** argv )
 	}
 	CloseHandle(hOrigDB);
 	
+    LogStartupStage("opening AO database");
 	if (!OpenLocalDB()) {
 		DisplayErrorMessage("Couldn't open the AO database (rdb.db).", FALSE);
 		CleanUp();
@@ -2119,47 +2244,14 @@ int main( int argc, char** argv )
 		return -1;
 	}
 	
-    if( ( g_Thread = CreateThread( NULL, 0, &HookManagerThread, NULL, 0, &dwThreadID ) ) == INVALID_HANDLE_VALUE )
+    LogStartupStage("starting hook manager");
+    if( !( g_Thread = CreateThread( NULL, 0, &HookManagerThread, NULL, 0, &dwThreadID ) ) )
     {
         DisplayErrorMessage( "Couldn't create hook thread.", FALSE );
         ReleaseAODatabase();
         CleanUp();
         return -1;
     }
-	
-	puSetAttribute( g_MainWin, PUA_WINDOW_OPENED, TRUE );
-	
-char cachePath[MAX_PATH];
-sprintf(cachePath, "%s\\ItemNames.db", g_CSDir);
-
-int needRebuild = 0;
-HANDLE hCache = CreateFileA(cachePath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-if (hCache == INVALID_HANDLE_VALUE) {
-    needRebuild = 1;
-} else {
-    char exePath[MAX_PATH];
-    GetModuleFileNameA(NULL, exePath, MAX_PATH);
-    HANDLE hExe = CreateFileA(exePath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-    if (hExe != INVALID_HANDLE_VALUE) {
-        FILETIME ftCache, ftExe;
-        GetFileTime(hCache, NULL, NULL, &ftCache);
-        GetFileTime(hExe, NULL, NULL, &ftExe);
-        if (CompareFileTime(&ftExe, &ftCache) > 0)
-            needRebuild = 1;
-        CloseHandle(hExe);
-    }
-    CloseHandle(hCache);
-}
-
-if (needRebuild) {
-    DeleteFileA(cachePath);
-    BuildItemNameCache(cachePath);
-}
-if (!LoadItemNameCache(cachePath)) {
-    BuildItemNameCache(cachePath);
-    LoadItemNameCache(cachePath);
-}
-
     MissionControls[ 0 ] = puGetObjectFromCollection( g_pCol, CS_MISSION1 );
     MissionControls[ 1 ] = puGetObjectFromCollection( g_pCol, CS_MISSION2 );
     MissionControls[ 2 ] = puGetObjectFromCollection( g_pCol, CS_MISSION3 );
@@ -2169,25 +2261,208 @@ if (!LoadItemNameCache(cachePath)) {
 	PULID radiusEntry = puGetObjectFromCollection(g_pCol, CS_EXITS_RADIUS_SLIDER);
 	if (radiusEntry) puSetAttribute(radiusEntry, PUA_TEXTENTRY_VALUE, g_ExitProximityRadius);
 
-    HWND hMainWnd = (HWND)puGetAttribute( g_MainWin, PUA_WINDOW_HANDLE );
-    SetWindowSubclass( hMainWnd, MainWndProcHook, 0, 0 );
-
     HICON hIcon = LoadIcon( GetModuleHandle( NULL ), MAKEINTRESOURCE( IDI_ICON1 ) );
-    if( hIcon )
-    {
-        PUU32 uWindowHandle = puGetAttribute( g_MainWin, PUA_WINDOW_HANDLE );
-        SendMessage( (HWND)uWindowHandle, WM_SETICON, ICON_BIG,   (LPARAM)hIcon );
-        SendMessage( (HWND)uWindowHandle, WM_SETICON, ICON_SMALL, (LPARAM)hIcon );
-    }
 	
 	InitDialogColors();
 
+    LogStartupStage("creating main window");
+    puSetAttribute(g_MainWin, PUA_WINDOW_OPENED, TRUE);
+    LogStartupStage("main window created");
+    HWND hMainWnd = (HWND)puGetAttribute(g_MainWin, PUA_WINDOW_HANDLE);
+    if (!hMainWnd)
+    {
+        LogStartupStage("main window creation failed");
+        DisplayErrorMessage("Could not create the main window.", FALSE);
+        CleanUp();
+        return -1;
+    }
+    SetWindowSubclass(hMainWnd, MainWndProcHook, 0, 0);
+    if (hIcon)
+    {
+        SendMessage(hMainWnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
+        SendMessage(hMainWnd, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
+    }
+
+    ItemNameCacheContext *cacheContext =
+        (ItemNameCacheContext*)malloc(sizeof(*cacheContext));
+    if (!cacheContext)
+    {
+        DisplayErrorMessage("Could not allocate item-cache initialization data.", FALSE);
+        CleanUp();
+        return -1;
+    }
+    snprintf(cacheContext->cachePath, sizeof(cacheContext->cachePath),
+        "%s\\ItemNames.db", g_CSDir);
+    snprintf(cacheContext->databasePath, sizeof(cacheContext->databasePath),
+        "%s\\cd_image\\rdb.db", g_AODir);
+    cacheContext->notificationWindow = hMainWnd;
+    g_hItemNameCacheThread = CreateThread(NULL, 0, ItemNameCacheThread,
+        cacheContext, 0, NULL);
+    if (!g_hItemNameCacheThread)
+    {
+        free(cacheContext);
+        DisplayErrorMessage("Could not start item-cache initialization.", FALSE);
+        CleanUp();
+        return -1;
+    }
+
+    LogStartupStage("entering application message loop");
     do
     {
         pAppMsg = puWaitAppMessages();
 
         switch( pAppMsg->Message )
         {
+        case CSAM_AI_DIFFICULTY_EASY:
+        case CSAM_AI_DIFFICULTY_NORMAL:
+        case CSAM_AI_DIFFICULTY_HARD:
+            {
+                DWORD selectedControl = CS_AI_DIFFICULTY_EASY_CONTROL;
+                if (pAppMsg->Message == CSAM_AI_DIFFICULTY_NORMAL)
+                    selectedControl = CS_AI_DIFFICULTY_NORMAL_CONTROL;
+                else if (pAppMsg->Message == CSAM_AI_DIFFICULTY_HARD)
+                    selectedControl = CS_AI_DIFFICULTY_HARD_CONTROL;
+
+                PULID easyControl = puGetObjectFromCollection(
+                    g_pCol, CS_AI_DIFFICULTY_EASY_CONTROL);
+                PULID normalControl = puGetObjectFromCollection(
+                    g_pCol, CS_AI_DIFFICULTY_NORMAL_CONTROL);
+                PULID hardControl = puGetObjectFromCollection(
+                    g_pCol, CS_AI_DIFFICULTY_HARD_CONTROL);
+                if (puGetAttribute(easyControl, PUA_CHECKBOX_CHECKED) !=
+                    (selectedControl == CS_AI_DIFFICULTY_EASY_CONTROL))
+                    puSetAttribute(easyControl, PUA_CHECKBOX_CHECKED,
+                        selectedControl == CS_AI_DIFFICULTY_EASY_CONTROL);
+                if (puGetAttribute(normalControl, PUA_CHECKBOX_CHECKED) !=
+                    (selectedControl == CS_AI_DIFFICULTY_NORMAL_CONTROL))
+                    puSetAttribute(normalControl, PUA_CHECKBOX_CHECKED,
+                        selectedControl == CS_AI_DIFFICULTY_NORMAL_CONTROL);
+                if (puGetAttribute(hardControl, PUA_CHECKBOX_CHECKED) !=
+                    (selectedControl == CS_AI_DIFFICULTY_HARD_CONTROL))
+                    puSetAttribute(hardControl, PUA_CHECKBOX_CHECKED,
+                        selectedControl == CS_AI_DIFFICULTY_HARD_CONTROL);
+
+                g_AIMissionDifficulty =
+                    selectedControl == CS_AI_DIFFICULTY_EASY_CONTROL
+                        ? CS_AI_DIFFICULTY_EASY
+                        : (selectedControl == CS_AI_DIFFICULTY_NORMAL_CONTROL
+                            ? CS_AI_DIFFICULTY_NORMAL : CS_AI_DIFFICULTY_HARD);
+                break;
+            }
+        case CSAM_AI_START:
+            {
+                int useLocations = puGetAttribute(
+                    puGetObjectFromCollection(g_pCol, CS_AI_USE_LOCATIONS),
+                    PUA_CHECKBOX_CHECKED);
+                int useExits = puGetAttribute(
+                    puGetObjectFromCollection(g_pCol, CS_AI_USE_EXITS),
+                    PUA_CHECKBOX_CHECKED);
+                int hasEasy = puGetAttribute(
+                    puGetObjectFromCollection(g_pCol, CS_AI_DIFFICULTY_EASY_CONTROL),
+                    PUA_CHECKBOX_CHECKED);
+                int hasNormal = puGetAttribute(
+                    puGetObjectFromCollection(g_pCol, CS_AI_DIFFICULTY_NORMAL_CONTROL),
+                    PUA_CHECKBOX_CHECKED);
+                int hasHard = puGetAttribute(
+                    puGetObjectFromCollection(g_pCol, CS_AI_DIFFICULTY_HARD_CONTROL),
+                    PUA_CHECKBOX_CHECKED);
+
+                if (g_AIMissionActive) {
+                    SetAIMissionStatus("already running");
+                    break;
+                }
+                if (g_bBuyingAgentActive) {
+                    SetAIMissionStatus("stop the Buying Agent before starting");
+                    break;
+                }
+                if (!useLocations && !useExits) {
+                    SetAIMissionStatus("enable at least one destination filter");
+                    break;
+                }
+                if ((useLocations && !HasAIMissionLocationRules()) ||
+                    (useExits && !HasCheckedAIExit())) {
+                    SetAIMissionStatus("the selected destination filter has no rules");
+                    break;
+                }
+                if ((hasEasy + hasNormal + hasHard) != 1) {
+                    SetAIMissionStatus("select exactly one difficulty");
+                    break;
+                }
+                g_AIMissionDifficulty = hasNormal
+                    ? CS_AI_DIFFICULTY_NORMAL
+                    : (hasHard ? CS_AI_DIFFICULTY_HARD : CS_AI_DIFFICULTY_EASY);
+                if (!SendAIMissionCommand(CS_AI_COMMAND_START,
+                    g_AIMissionDifficulty, 0)) {
+                    SetAIMissionStatus("AOHook not ready, or multiple AO clients are open");
+                    break;
+                }
+                g_AIMissionActive = 1;
+                SetAIMissionStatus("starting conversation with targeted officer");
+                break;
+            }
+        case CSAM_AI_STOP:
+            if (!SendAIMissionCommand(CS_AI_COMMAND_STOP,
+                g_AIMissionDifficulty, 0)) {
+                SetAIMissionStatus("could not reach AOHook");
+            } else {
+                g_AIMissionActive = 0;
+                SetAIMissionStatus("stopped");
+            }
+            break;
+        case CSAM_AI_EVENT:
+            {
+                CSAIMissionEvent* event =
+                    (CSAIMissionEvent*)(PUU32)pAppMsg->Param;
+                if (!event)
+                    break;
+                if (event->type == CS_AI_EVENT_STATUS) {
+                    g_AIMissionActive = event->state != CS_AI_STATE_STOPPED;
+                    SetAIMissionStatus(event->status);
+                } else if (event->type == CS_AI_EVENT_MISSION) {
+                    int useLocations = puGetAttribute(
+                        puGetObjectFromCollection(g_pCol, CS_AI_USE_LOCATIONS),
+                        PUA_CHECKBOX_CHECKED);
+                    int useExits = puGetAttribute(
+                        puGetObjectFromCollection(g_pCol, CS_AI_USE_EXITS),
+                        PUA_CHECKBOX_CHECKED);
+                    char matchedLocation[256] = "";
+                    int locationResult = useLocations
+                        ? CheckAIMissionLocationMatch(event->zoneId,
+                            event->x, event->y, matchedLocation,
+                            sizeof(matchedLocation))
+                        : TRUE;
+                    if (locationResult < 0) {
+                        SendAIMissionCommand(CS_AI_COMMAND_STOP,
+                            g_AIMissionDifficulty, 0);
+                        g_AIMissionActive = 0;
+                        SetAIMissionStatus("could not resolve destination; mission kept, automation stopped");
+                    } else {
+                        int locationMatches = !useLocations || locationResult > 0;
+                        const char* matchedExit = useExits
+                            ? GetMatchedExitName(event->zoneId, event->x, event->y)
+                            : NULL;
+                        int exitMatches = !useExits || matchedExit != NULL;
+                        DWORD command = locationMatches && exitMatches
+                            ? CS_AI_COMMAND_ACCEPT_MISSION
+                            : CS_AI_COMMAND_REJECT_MISSION;
+
+                        if (!SendAIMissionCommand(command,
+                            g_AIMissionDifficulty, event->missionId)) {
+                            SendAIMissionCommand(CS_AI_COMMAND_STOP,
+                                g_AIMissionDifficulty, 0);
+                            g_AIMissionActive = 0;
+                            SetAIMissionStatus("could not return the destination decision to AOHook");
+                        } else if (command == CS_AI_COMMAND_ACCEPT_MISSION) {
+                            g_AIMissionActive = 0;
+                            SetAIMissionStatus("destination matched; mission kept");
+                        } else {
+                            SetAIMissionStatus("destination mismatch; deleting and restarting");
+                        }
+                    }
+                }
+                free(event);
+                break;
+            }
 		case CSAM_NO_MISSION_RESPONSE:
 			if (g_bBuyingAgentActive && g_BuyingAgentCount == 0 && g_BuyingAgentMissions > 0)
 			{
@@ -2528,6 +2803,11 @@ if (!LoadItemNameCache(cachePath)) {
             break;
 
         case CSAM_NEWMISSIONS:
+            if (!itemNameCacheReady)
+            {
+                missionPacketPending = TRUE;
+                break;
+            }
             if (!DequeueIncomingMissionPacket())
                 break;
 			if( !g_BuyingAgentCount && g_bFullscreen )
@@ -2777,6 +3057,23 @@ if (!LoadItemNameCache(cachePath)) {
 				stop_buying_agent:;
 			}
 			break;
+        case CSAM_ITEM_NAME_CACHE_READY:
+            if (pAppMsg->Param)
+            {
+                itemNameCacheReady = TRUE;
+                if (missionPacketPending)
+                {
+                    missionPacketPending = FALSE;
+                    puSendAppMessage(CSAM_NEWMISSIONS, 0);
+                }
+            }
+            else
+            {
+                DisplayErrorMessage(
+                    "Could not load or build the item-name cache. Mission matching is unavailable.",
+                    TRUE);
+            }
+            break;
 
         case CSAM_PRESTARTBUYINGAGENT:
             if( puGetAttribute( puGetObjectFromCollection( g_pCol, CS_BAINFO_CB ), PUA_CHECKBOX_CHECKED ) )
@@ -3003,6 +3300,13 @@ void CleanUp()
     if (g_hThreadExitEvent != NULL) {
         SetEvent(g_hThreadExitEvent);
     }
+
+    if (g_hItemNameCacheThread)
+    {
+        WaitForSingleObject(g_hItemNameCacheThread, INFINITE);
+        CloseHandle(g_hItemNameCacheThread);
+        g_hItemNameCacheThread = NULL;
+    }
     
     if( g_Thread != INVALID_HANDLE_VALUE )
     {
@@ -3073,7 +3377,10 @@ enum
     CFG_WINDOWSCALEY,
     CFG_ITEMVALUECL,
     CFG_ACCEPTEDMISSIONWINDOWX,
-    CFG_ACCEPTEDMISSIONWINDOWY
+    CFG_ACCEPTEDMISSIONWINDOWY,
+    CFG_AI_MISSION_DIFFICULTY,
+    CFG_AI_MISSION_USE_LOCATIONS,
+    CFG_AI_MISSION_USE_EXITS
 };
 
 
@@ -3122,6 +3429,9 @@ struct
     { CFG_ITEMVALUECL, "ITEMVALUECL" },
     { CFG_ACCEPTEDMISSIONWINDOWX, "ACCEPTEDMISSIONWINDOWX" },
     { CFG_ACCEPTEDMISSIONWINDOWY, "ACCEPTEDMISSIONWINDOWY" },
+    { CFG_AI_MISSION_DIFFICULTY, "AI_MISSION_DIFFICULTY" },
+    { CFG_AI_MISSION_USE_LOCATIONS, "AI_MISSION_USE_LOCATIONS" },
+    { CFG_AI_MISSION_USE_EXITS, "AI_MISSION_USE_EXITS" },
     { 0, NULL }
 };
 
@@ -3236,6 +3546,34 @@ void ImportSettings( char* filename )
                     if (sscanf(Value, "%d", &iVal) == 1 &&
                         iVal >= -10000 && iVal <= 10000)
                         g_AcceptedMissionWindowY = iVal;
+                    break;
+                case CFG_AI_MISSION_DIFFICULTY:
+                    if (sscanf(Value, "%u", &Val) == 1 &&
+                        Val <= CS_AI_DIFFICULTY_HARD)
+                    {
+                        g_AIMissionDifficulty = Val;
+                        puSetAttribute(puGetObjectFromCollection(g_pCol,
+                            CS_AI_DIFFICULTY_EASY_CONTROL), PUA_CHECKBOX_CHECKED,
+                            Val == CS_AI_DIFFICULTY_EASY);
+                        puSetAttribute(puGetObjectFromCollection(g_pCol,
+                            CS_AI_DIFFICULTY_NORMAL_CONTROL), PUA_CHECKBOX_CHECKED,
+                            Val == CS_AI_DIFFICULTY_NORMAL);
+                        puSetAttribute(puGetObjectFromCollection(g_pCol,
+                            CS_AI_DIFFICULTY_HARD_CONTROL), PUA_CHECKBOX_CHECKED,
+                            Val == CS_AI_DIFFICULTY_HARD);
+                    }
+                    break;
+                case CFG_AI_MISSION_USE_LOCATIONS:
+                    if (sscanf(Value, "%u", &Val) == 1 && Val <= 1)
+                        puSetAttribute(puGetObjectFromCollection(g_pCol,
+                            CS_AI_USE_LOCATIONS), PUA_CHECKBOX_CHECKED,
+                            Val ? TRUE : FALSE);
+                    break;
+                case CFG_AI_MISSION_USE_EXITS:
+                    if (sscanf(Value, "%u", &Val) == 1 && Val <= 1)
+                        puSetAttribute(puGetObjectFromCollection(g_pCol,
+                            CS_AI_USE_EXITS), PUA_CHECKBOX_CHECKED,
+                            Val ? TRUE : FALSE);
                     break;
                 case CFG_WINDOWWIDTH:
                     sscanf( Value, "%u", &Val );
@@ -3486,6 +3824,19 @@ BOOL ExportSettings( char* filename )
     fprintf( fp, "ALERTITEM::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ALERTITEM_CB ), PUA_CHECKBOX_CHECKED ) );
     fprintf( fp, "ALERTLOC::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ALERTLOC_CB ), PUA_CHECKBOX_CHECKED ) );
     fprintf( fp, "ALERTTYPE::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_ALERTTYPE_CB ), PUA_CHECKBOX_CHECKED ) );
+    fprintf(fp, "AI_MISSION_DIFFICULTY::%u\n",
+        puGetAttribute(puGetObjectFromCollection(g_pCol,
+            CS_AI_DIFFICULTY_NORMAL_CONTROL), PUA_CHECKBOX_CHECKED)
+            ? CS_AI_DIFFICULTY_NORMAL
+            : (puGetAttribute(puGetObjectFromCollection(g_pCol,
+                CS_AI_DIFFICULTY_HARD_CONTROL), PUA_CHECKBOX_CHECKED)
+                ? CS_AI_DIFFICULTY_HARD : CS_AI_DIFFICULTY_EASY));
+    fprintf(fp, "AI_MISSION_USE_LOCATIONS::%u\n",
+        puGetAttribute(puGetObjectFromCollection(g_pCol, CS_AI_USE_LOCATIONS),
+            PUA_CHECKBOX_CHECKED));
+    fprintf(fp, "AI_MISSION_USE_EXITS::%u\n",
+        puGetAttribute(puGetObjectFromCollection(g_pCol, CS_AI_USE_EXITS),
+            PUA_CHECKBOX_CHECKED));
     fprintf( fp, "BUYINGAGENTMAXTRIES::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENTTRIES ), PUA_TEXTENTRY_VALUE ) );
     fprintf( fp, "BUYINGAGENTMISH::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENTMISH ), PUA_TEXTENTRY_VALUE ) );
     fprintf( fp, "BUYINGAGENTHIDE::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENTFOLD ), PUA_FOLD_FOLDED ) );
@@ -3795,6 +4146,106 @@ static const char* GetAcceptedMissionLocation(const CSAcceptedMission* mission)
     return mission->playfield[0] ? mission->playfield : "Unknown location";
 }
 
+static int ContainsCaseInsensitive(const char* text, const char* search)
+{
+    size_t searchLength;
+    if (!text || !search || !search[0])
+        return 0;
+    searchLength = strlen(search);
+    if (strlen(text) < searchLength)
+        return 0;
+    for (; *text; text++)
+        if (_strnicmp(text, search, searchLength) == 0)
+            return 1;
+    return 0;
+}
+
+static void AppendAcceptedMissionSearchText(char* text, size_t textSize,
+    size_t* textLength, const char* value)
+{
+    size_t valueLength;
+    size_t available;
+    if (!value || !value[0] || *textLength >= textSize - 1)
+        return;
+    valueLength = strlen(value);
+    available = textSize - *textLength - 1;
+    if (valueLength > available)
+        valueLength = available;
+    memcpy(text + *textLength, value, valueLength);
+    *textLength += valueLength;
+    text[*textLength] = '\0';
+    if (*textLength < textSize - 1)
+        text[(*textLength)++] = ' ';
+    text[*textLength] = '\0';
+}
+
+static int AcceptedMissionMatchesFilter(const LoggedMission* loggedMission,
+    const char* filter)
+{
+    const CSAcceptedMission* mission = &loggedMission->mission;
+    char searchText[4096] = "";
+    char number[64];
+    size_t searchTextLength = 0;
+    if (!filter || !filter[0])
+        return 1;
+
+    AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+        &searchTextLength, mission->characterName);
+    AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+        &searchTextLength, loggedMission->activeCharacterName);
+    AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+        &searchTextLength, mission->title);
+    AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+        &searchTextLength, MissionTypeIdToString(mission->missionTypeId));
+    AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+        &searchTextLength, GetAcceptedMissionLocation(mission));
+    AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+        &searchTextLength, mission->playfield);
+    AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+        &searchTextLength, mission->matchedLocation);
+    AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+        &searchTextLength, mission->matchedExit);
+    AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+        &searchTextLength, mission->findItem);
+
+    snprintf(number, sizeof(number), "%u", mission->missionId);
+    AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+        &searchTextLength, number);
+    snprintf(number, sizeof(number), "%u", mission->missionTypeId);
+    AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+        &searchTextLength, number);
+    snprintf(number, sizeof(number), "%u", mission->zoneId);
+    AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+        &searchTextLength, number);
+    snprintf(number, sizeof(number), "%u", mission->missionQL);
+    AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+        &searchTextLength, number);
+    snprintf(number, sizeof(number), "%u", mission->cash);
+    AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+        &searchTextLength, number);
+    snprintf(number, sizeof(number), "%u", mission->xp);
+    AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+        &searchTextLength, number);
+    snprintf(number, sizeof(number), "%u", mission->rewardCount);
+    AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+        &searchTextLength, number);
+    snprintf(number, sizeof(number), "%.1f %.1f", mission->x, mission->y);
+    AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+        &searchTextLength, number);
+
+    for (PUU32 i = 0; i < mission->rewardCount &&
+        searchTextLength < sizeof(searchText) - 1; i++) {
+        AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+            &searchTextLength, mission->rewards[i].name);
+        snprintf(number, sizeof(number), "%u %u",
+            mission->rewards[i].ql, mission->rewards[i].value);
+        AppendAcceptedMissionSearchText(searchText, sizeof(searchText),
+            &searchTextLength, number);
+    }
+
+    return ContainsCaseInsensitive(searchText, filter);
+}
+
 static int CompareAcceptedMissionSortEntries(const void* left, const void* right)
 {
     const AcceptedMissionSortEntry* a = (const AcceptedMissionSortEntry*)left;
@@ -3926,9 +4377,12 @@ static void RefreshAcceptedMissionsWindow(void)
     int firstMissionData = 0;
     int firstGroupData = 0;
     char selectedGroup[CS_ACCEPTED_MISSION_LOCATION_SIZE] = "";
+    char filter[CS_ACCEPTED_MISSION_TITLE_SIZE] = "";
 
     if (!g_hAcceptedMissionList)
         return;
+    if (g_hAcceptedMissionFilter)
+        GetWindowTextA(g_hAcceptedMissionFilter, filter, sizeof(filter));
 
     int selectedRow = (int)SendMessage(g_hAcceptedMissionList, LB_GETCURSEL, 0, 0);
     if (selectedRow != LB_ERR) {
@@ -3951,7 +4405,8 @@ static void RefreshAcceptedMissionsWindow(void)
 
     for (int i = 0; i < g_LoggedMissionCount; i++) {
         if (g_LoggedMissions[i].manuallyRemoved ||
-            !g_LoggedMissions[i].confirmedActive)
+            !g_LoggedMissions[i].confirmedActive ||
+            !AcceptedMissionMatchesFilter(&g_LoggedMissions[i], filter))
             continue;
         snprintf(entries[entryCount].location, sizeof(entries[entryCount].location), "%s",
             GetAcceptedMissionLocation(&g_LoggedMissions[i].mission));
@@ -4085,7 +4540,12 @@ static void RefreshAcceptedMissionsWindow(void)
             }
         }
     } else {
-        if (!g_bAcceptedMissionSnapshotReceived) {
+        if (filter[0]) {
+            char emptyMessage[CS_ACCEPTED_MISSION_TITLE_SIZE + 64];
+            snprintf(emptyMessage, sizeof(emptyMessage),
+                "No active missions match the search \"%s\".", filter);
+            SetWindowTextA(g_hAcceptedMissionDetails, emptyMessage);
+        } else if (!g_bAcceptedMissionSnapshotReceived) {
             SetWindowTextA(g_hAcceptedMissionDetails,
                 "Waiting for live mission-list data from Anarchy Online.");
         } else {
@@ -4390,9 +4850,15 @@ static LRESULT CALLBACK AcceptedMissionsWndProc(HWND hWnd, UINT msg, WPARAM wPar
         HWND label = CreateWindowExA(0, "STATIC", "Accepted missions",
             WS_CHILD | WS_VISIBLE, 12, 12, 250, 18, hWnd, NULL,
             GetModuleHandle(NULL), NULL);
+        HWND filterLabel = CreateWindowExA(0, "STATIC", "Search missions:",
+            WS_CHILD | WS_VISIBLE, 12, 35, 240, 16, hWnd, NULL,
+            GetModuleHandle(NULL), NULL);
+        g_hAcceptedMissionFilter = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 12, 52, 240, 22,
+            hWnd, (HMENU)IDC_ACCEPTED_MISSION_FILTER, GetModuleHandle(NULL), NULL);
         g_hAcceptedMissionList = CreateWindowExA(WS_EX_CLIENTEDGE, "LISTBOX", "",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT |
-            WS_VSCROLL, 12, 34, 240, 325, hWnd,
+            WS_VSCROLL, 12, 80, 240, 279, hWnd,
             (HMENU)IDC_ACCEPTED_MISSION_LIST, GetModuleHandle(NULL), NULL);
         HWND detailsLabel = CreateWindowExA(0, "STATIC", "Mission details",
             WS_CHILD | WS_VISIBLE, 266, 12, 400, 18, hWnd, NULL,
@@ -4410,10 +4876,13 @@ static LRESULT CALLBACK AcceptedMissionsWndProc(HWND hWnd, UINT msg, WPARAM wPar
         HWND closeButton = CreateWindowExA(0, "BUTTON", "Close",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 606, 372, 90, 26,
             hWnd, (HMENU)IDC_ACCEPTED_MISSION_CLOSE, GetModuleHandle(NULL), NULL);
-        if (!label || !g_hAcceptedMissionList || !detailsLabel ||
+        if (!label || !filterLabel || !g_hAcceptedMissionFilter ||
+            !g_hAcceptedMissionList || !detailsLabel ||
             !g_hAcceptedMissionDetails || !removeButton || !waypointButton || !closeButton)
             return -1;
         SetAcceptedControlFont(label);
+        SetAcceptedControlFont(filterLabel);
+        SetAcceptedControlFont(g_hAcceptedMissionFilter);
         SetAcceptedControlFont(g_hAcceptedMissionList);
         SetWindowSubclass(g_hAcceptedMissionList,
             AcceptedMissionListWndProc, 1, 0);
@@ -4441,8 +4910,10 @@ static LRESULT CALLBACK AcceptedMissionsWndProc(HWND hWnd, UINT msg, WPARAM wPar
         int listWidth = 240;
         int margin = 12;
         int buttonY = height - 38;
-        MoveWindow(GetDlgItem(hWnd, IDC_ACCEPTED_MISSION_LIST), margin, 34,
-            listWidth, buttonY - 42, TRUE);
+        MoveWindow(GetDlgItem(hWnd, IDC_ACCEPTED_MISSION_FILTER), margin, 52,
+            listWidth, 22, TRUE);
+        MoveWindow(GetDlgItem(hWnd, IDC_ACCEPTED_MISSION_LIST), margin, 80,
+            listWidth, buttonY - 88, TRUE);
         MoveWindow(GetDlgItem(hWnd, IDC_ACCEPTED_MISSION_DETAILS), 266, 34,
             width - 278, buttonY - 42, TRUE);
         MoveWindow(GetDlgItem(hWnd, IDC_ACCEPTED_MISSION_REMOVE), margin, buttonY,
@@ -4469,6 +4940,10 @@ static LRESULT CALLBACK AcceptedMissionsWndProc(HWND hWnd, UINT msg, WPARAM wPar
     }
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
+        case IDC_ACCEPTED_MISSION_FILTER:
+            if (HIWORD(wParam) == EN_CHANGE)
+                RefreshAcceptedMissionsWindow();
+            return 0;
         case IDC_ACCEPTED_MISSION_LIST:
             if (HIWORD(wParam) == LBN_SELCHANGE) {
                 int row = (int)SendMessage(g_hAcceptedMissionList, LB_GETCURSEL, 0, 0);
@@ -4526,6 +5001,7 @@ static LRESULT CALLBACK AcceptedMissionsWndProc(HWND hWnd, UINT msg, WPARAM wPar
         g_hAcceptedMissionsWindow = NULL;
         g_hAcceptedMissionList = NULL;
         g_hAcceptedMissionDetails = NULL;
+        g_hAcceptedMissionFilter = NULL;
         free(g_AcceptedMissionGroupViews);
         g_AcceptedMissionGroupViews = NULL;
         g_AcceptedMissionGroupViewCount = 0;

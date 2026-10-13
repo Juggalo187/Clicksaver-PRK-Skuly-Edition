@@ -6,10 +6,11 @@
 #ifndef __CLICKSAVER_H__
 #define __CLICKSAVER_H__
 
-#define CS_VERSION "1.2.9"
+#define CS_VERSION "1.3"
 
 #include <windows.h>
 #include "mission.h"
+#include "../AOHook/ai_mission_protocol.h"
 #include "sqlite3.h"
 #include <time.h>
 
@@ -21,7 +22,13 @@
 
 extern PUU8 g_bUpdatingCounters;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 void WriteLog( const char* Format, ... ) PRINTF_ATTR(1,2);
+#ifdef __cplusplus
+}
+#endif
 void WriteDebug( const char* txt ) PRINTF_ATTR(1,2);
 void EndBuyingAgent(int keepWindow);
 
@@ -37,6 +44,7 @@ void EndBuyingAgent(int keepWindow);
 #define IDC_ACCEPTED_MISSION_REMOVE 302
 #define IDC_ACCEPTED_MISSION_WAYPOINT 303
 #define IDC_ACCEPTED_MISSION_CLOSE 304
+#define IDC_ACCEPTED_MISSION_FILTER 305
 
 typedef struct {
     char name[128];
@@ -203,7 +211,15 @@ enum
     CS_COORDINATE_SCALE_Y,
     CS_COORDINATE_SCALE_BTN,
     CS_ITEMVALUE_COMPLIT,
-    CS_ITEMVALUE_SAVE_BTN
+    CS_ITEMVALUE_SAVE_BTN,
+
+    CS_AI_MISSIONS_TAB,
+    CS_AI_DIFFICULTY_EASY_CONTROL,
+    CS_AI_DIFFICULTY_NORMAL_CONTROL,
+    CS_AI_DIFFICULTY_HARD_CONTROL,
+    CS_AI_USE_LOCATIONS,
+    CS_AI_USE_EXITS,
+    CS_AI_STATUS
 };
 
 enum
@@ -246,7 +262,14 @@ enum
 	CSAM_UPDATE_COORDINATE_SCALE,
 	CSAM_SAVE_SETTINGS,
 	CSAM_SHOW_ACCEPTED_MISSIONS,
-	CSAM_SYNC_ACCEPTED_MISSIONS
+	CSAM_SYNC_ACCEPTED_MISSIONS,
+    CSAM_AI_DIFFICULTY_EASY,
+    CSAM_AI_DIFFICULTY_NORMAL,
+    CSAM_AI_DIFFICULTY_HARD,
+    CSAM_AI_START,
+    CSAM_AI_STOP,
+    CSAM_AI_EVENT,
+    CSAM_ITEM_NAME_CACHE_READY
 };
 
 extern PULID g_ItemWatchList;
@@ -273,6 +296,17 @@ void safe_strcat(char *dest, size_t dest_size, const char *src);
 int IsWatchlistEntryValid(const char *searchStr);
 int GetFilteredMatchingItems(const char *baseName, const char *excludeWords, const char ***outItems, int *outCount);
 int CheckMissionNearExit(int zoneId, float x, float y);
+int HasCheckedAIExit(void);
+int CheckAIMissionLocationMatch(int zoneId, float x, float y,
+    char* matchedLocation, int matchedLocationSize);
+int HasAIMissionLocationRules(void);
+#ifdef __cplusplus
+extern "C" {
+#endif
+BOOL SendAIMissionCommand(DWORD command, DWORD difficulty, DWORD missionId);
+#ifdef __cplusplus
+}
+#endif
 
 #define EndianSwap16(x) ( ( x ) >> 8 | ( x ) << 8 )
 #define EndianSwap32(x) ( ( x ) << 24 | ( ( x ) & 0xff00 ) << 8 | ( ( x ) >> 8 ) & 0xff00 | ( x ) >> 24 )
@@ -284,7 +318,6 @@ int OpenLocalDB();
 void ReleaseAODatabase();
 void* GetDataChunk( PUU32 _KeyHi, PUU32 _KeyLo, PUU32* _pSize );
 void DebugPacket( void* pData, unsigned int length );
-void WriteLog( const char* Format, ... );
 void WriteDebug( const char* txt );
 const char* GetMatchedExitName(int zoneId, float x, float y);
 #endif

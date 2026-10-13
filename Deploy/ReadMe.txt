@@ -86,6 +86,15 @@ AcceptedMissions.dat so the window can restore missions across ClickSaver
 restarts; missions are shown again only when AO confirms their IDs are still
 active. The window position is saved with ClickSaver's settings.
 
+The "AI Missions" tab talks to the targeted Unicorn Intelligence Officer,
+selects the chosen difficulty, and checks each newly issued mission against
+the Locations list and/or checked Exits. If a destination does not match, it
+deletes that mission and restarts the officer dialogue. When both filters are
+enabled, both must match. AI mission selection ignores rewards, items, and XP.
+Use one AO client, stop the Buying Agent, and target the officer before
+starting. The native AOHook bridge targets Project Rubika client 18.4; live
+validation is required before relying on automated dialogue or mission deletion.
+
 The "item list" tab shows a list where you can enter substring to
 search among item names. Ex: "battle suit", "hand axe", etc.
 In addition to the add and remove buttons, there's several
