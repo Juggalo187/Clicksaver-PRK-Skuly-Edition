@@ -32,6 +32,7 @@ extern "C" HANDLE g_Mutex;
 extern "C" char g_CSDir[ MAX_PATH ];
 extern "C" char g_CurrentPacket[ 65536 ];
 extern "C" HANDLE g_hThreadExitEvent;
+extern "C" volatile LONG g_bPreserveAOHookForAIMonitor;
 
 static HWND FindAOCommandWindow(DWORD processId)
 {
@@ -57,6 +58,13 @@ static HWND FindAOCommandWindow(DWORD processId)
     return context.result;
 }
 
+static BOOL g_AIManualMode = FALSE;
+
+extern "C" void SetAIMissionManualMode(BOOL manual)
+{
+    g_AIManualMode = manual;
+}
+
 extern "C" BOOL SendAIMissionCommand(DWORD command, DWORD difficulty,
     DWORD missionId, HWND clientWindow, DWORD clientProcessId)
 {
@@ -74,7 +82,8 @@ extern "C" BOOL SendAIMissionCommand(DWORD command, DWORD difficulty,
     if (!commandWindow)
         return FALSE;
 
-    CSAIMissionCommand payload = { command, difficulty, missionId };
+    CSAIMissionCommand payload = { command, difficulty, missionId,
+        g_AIManualMode ? 1UL : 0UL };
     COPYDATASTRUCT data = { 0 };
     DWORD_PTR result = 0;
     data.dwData = CS_AI_COMMAND_COPYDATA;
@@ -136,11 +145,16 @@ static HMODULE GetRemoteModuleHandle(DWORD processId, const char* moduleName)
     return result;
 }
 
-static void UnloadAOHook(DWORD processId)
+static void UnloadAOHook(HWND clientWindow, DWORD processId)
 {
     HMODULE hRemoteModule = GetRemoteModuleHandle(processId, "AOHook.dll");
     if (!hRemoteModule)
         return;
+
+    // Let AOHook stop its own threads first; see CS_AI_COMMAND_PREPARE_UNLOAD.
+    if (SendAIMissionCommand(CS_AI_COMMAND_PREPARE_UNLOAD, 0, 0,
+        clientWindow, processId))
+        Sleep(500);
 
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processId);
     if (!hProcess)
@@ -307,11 +321,15 @@ LRESULT CALLBACK HookWndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam 
                 event->clientWindow = (HWND)wParam;
                 GetWindowThreadProcessId(event->clientWindow,
                     &event->clientProcessId);
-                puSendAppMessage(CSAM_AI_EVENT, (PUU32)event);
+                if (puTrySendAppMessage(CSAM_AI_EVENT, (PUU32)event))
+                    return 1;
+                free(event);
+                WriteLog("Could not queue an AI mission event.");
+                return 0;
             } else {
                 WriteLog("Could not allocate an AI mission event.");
+                return 0;
             }
-            break;
         }
         if (pData && pData->dwData == CS_ACCEPTED_MISSION_SYNC_COPYDATA)
         {
@@ -373,13 +391,18 @@ extern "C" DWORD WINAPI HookManagerThread( void* _pParam )
 
         if (dwWaitResult == WAIT_OBJECT_0)
         {
-            HWND AOWnd = FindWindow( "Anarchy client", NULL );
-            if (AOWnd)
+            // Keep AOHook alive so an active AI monitor can be reclaimed.
+            if (!InterlockedCompareExchange(
+                &g_bPreserveAOHookForAIMonitor, 0, 0))
             {
-                DWORD pid = 0;
-                GetWindowThreadProcessId(AOWnd, &pid);
-                if (pid)
-                    UnloadAOHook(pid);
+                HWND AOWnd = FindWindow( "Anarchy client", NULL );
+                if (AOWnd)
+                {
+                    DWORD pid = 0;
+                    GetWindowThreadProcessId(AOWnd, &pid);
+                    if (pid)
+                        UnloadAOHook(AOWnd, pid);
+                }
             }
             break;
         }

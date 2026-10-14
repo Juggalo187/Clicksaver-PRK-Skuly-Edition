@@ -86,14 +86,24 @@ AcceptedMissions.dat so the window can restore missions across ClickSaver
 restarts; missions are shown again only when AO confirms their IDs are still
 active. The window position is saved with ClickSaver's settings.
 
-The "AI Missions" tab talks to the targeted Unicorn Intelligence Officer,
-selects the chosen difficulty, and checks each newly issued mission against
-the Locations list and/or checked Exits. If a destination does not match, it
-deletes that mission and restarts the officer dialogue. When both filters are
-enabled, both must match. AI mission selection ignores rewards, items, and XP.
-Use one AO client, stop the Buying Agent, and target the officer before
-starting. The native AOHook bridge targets Project Rubika client 18.4; live
-validation is required before relying on dialogue handling or mission deletion.
+The "AI" tab monitors missions accepted manually through the AO dialogue.
+Select the AO client and destination filters, then press Start before accepting
+a mission. The monitor does not interact with the dialogue or use Next. A
+matching mission stops the monitor and returns the button to Start; a mismatch
+changes the button to Delete. After deleting a mismatch, it keeps watching
+automatically until a matching mission is found. When both destination filters
+are enabled, both must match. The selected filters, Locations entries, checked
+Exits, and exit range are captured when monitoring starts; edits during a run
+apply the next time monitoring starts. The native AOHook bridge targets Project
+Rubika client 18.4; live validation is required before relying on mission
+monitoring or deletion.
+
+By default, the Locations filter is off and the checked-Exit filter is on.
+Starting the monitor requires at least one enabled filter with rules: at least
+one valid Locations entry for Locations, or at least one checked Exit for
+Exits. If neither filter is enabled, or an enabled filter has no rules, Start
+is refused; it does not accept every mission. Saved filter preferences override
+these defaults.
 
 The "item list" tab shows a list where you can enter substring to
 search among item names. Ex: "battle suit", "hand axe", etc.

@@ -115,6 +115,7 @@ typedef struct
 typedef PUU32 ( * PUAPPMESSCALLBACK )( PUU32 _Message, PUU32 _Param );
 
 PUU32			puPostAppMessage( PUU32 _Message, PUU32 _Param );
+PUU32			puTrySendAppMessage( PUU32 _Message, PUU32 _Param );
 void			puSendAppMessage( PUU32 _Message, PUU32 _Param );
 pusAppMessage*	puGetAppMessage();
 pusAppMessage*	puWaitAppMessages();

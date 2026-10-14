@@ -82,6 +82,26 @@ PUU32 puRegisterClassHandler( PULID _Object, PULID _Class, void* _pData, PUU32 _
 			}
 			return puDoSuperMethod( _Object, _Class, _MethodID, _Param1, _Param2 );
 
+		case PUM_GET:
+			if( _Param1 == PUA_REGISTER_CURRENTTAB )
+			{
+				pusNode* pCurrent;
+				pusNode* pNext;
+				PUU32 TabIndex = 0;
+
+				pCurrent = pData->TabList.pFirst;
+				while( pNext = pCurrent->pNext )
+				{
+					if( ( pusRegisterTab* )pCurrent == pData->pSelectedTab )
+						return TabIndex;
+					TabIndex++;
+					pCurrent = pNext;
+				}
+
+				return ( PUU32 )-1;
+			}
+			return puDoSuperMethod( _Object, _Class, _MethodID, _Param1, _Param2 );
+
 		/* Register methods */
 		case PUM_REGISTER_ADDTAB:	// Param1, Label
 			{

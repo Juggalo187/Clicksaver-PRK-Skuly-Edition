@@ -11,13 +11,21 @@ typedef enum CSAIMissionCommandType
     CS_AI_COMMAND_START = 1,
     CS_AI_COMMAND_STOP,
     CS_AI_COMMAND_REJECT_MISSION,
-    CS_AI_COMMAND_ACCEPT_MISSION
+    CS_AI_COMMAND_ACCEPT_MISSION,
+    CS_AI_COMMAND_NEXT,
+    CS_AI_COMMAND_MONITOR_START,
+    CS_AI_COMMAND_MONITOR_STOP,
+    CS_AI_COMMAND_DELETE_MONITORED_MISSION,
+    CS_AI_COMMAND_MONITOR_PING,
+    CS_AI_COMMAND_PREPARE_UNLOAD
 } CSAIMissionCommandType;
 
 typedef enum CSAIMissionEventType
 {
     CS_AI_EVENT_STATUS = 1,
-    CS_AI_EVENT_MISSION
+    CS_AI_EVENT_MISSION,
+    CS_AI_EVENT_MONITORED_MISSION,
+    CS_AI_EVENT_MONITOR_STATUS
 } CSAIMissionEventType;
 
 typedef enum CSAIMissionState
@@ -29,7 +37,8 @@ typedef enum CSAIMissionState
     CS_AI_STATE_WAITING_FOR_DECISION,
     CS_AI_STATE_WAITING_FOR_DELETION,
     CS_AI_STATE_WAITING_FOR_REOPEN,
-    CS_AI_STATE_WAITING_FOR_CLOSE
+    CS_AI_STATE_WAITING_FOR_CLOSE,
+    CS_AI_STATE_WAITING_FOR_RESTART
 } CSAIMissionState;
 
 typedef enum CSAIMissionDifficulty
@@ -44,6 +53,7 @@ typedef struct CSAIMissionCommand
     DWORD type;
     DWORD difficulty;
     DWORD missionId;
+    DWORD manual;
 } CSAIMissionCommand;
 
 typedef struct CSAIMissionEvent

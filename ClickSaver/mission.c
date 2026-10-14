@@ -2225,6 +2225,111 @@ int CheckAIMissionLocationMatch(int zoneId, float x, float y,
     return FALSE;
 }
 
+struct CSAIMissionLocationRules
+{
+    char** entries;
+    size_t count;
+};
+
+CSAIMissionLocationRules* CaptureAIMissionLocationRules(void)
+{
+    CSAIMissionLocationRules* rules;
+    PUU32 record;
+    PUU32 recordCount;
+
+    if (!g_LocWatchList)
+        return NULL;
+
+    rules = (CSAIMissionLocationRules*)calloc(1, sizeof(*rules));
+    if (!rules)
+        return NULL;
+
+    recordCount = puGetAttribute(g_LocWatchList, PUA_TABLE_NUMRECORDS);
+    if ((size_t)recordCount > ((size_t)-1) / sizeof(*rules->entries))
+    {
+        free(rules);
+        return NULL;
+    }
+    if (recordCount)
+    {
+        rules->entries = (char**)calloc(recordCount,
+            sizeof(*rules->entries));
+        if (!rules->entries)
+        {
+            free(rules);
+            return NULL;
+        }
+    }
+
+    record = puDoMethod(g_LocWatchList, PUM_TABLE_GETFIRSTRECORD, 0, 0);
+    while (record)
+    {
+        PUU8* locationSearch = (PUU8*)puDoMethod(
+            g_LocWatchList, PUM_TABLE_GETFIELDVAL, record, 0);
+        if (locationSearch && locationSearch[0] &&
+            locationSearch[0] != '#' &&
+            IsSafeAIMissionLocationSearch((char*)locationSearch))
+        {
+            size_t length = strlen((char*)locationSearch);
+            char* entry = (char*)malloc(length + 1);
+            if (!entry)
+            {
+                FreeAIMissionLocationRules(rules);
+                return NULL;
+            }
+            memcpy(entry, locationSearch, length + 1);
+            rules->entries[rules->count++] = entry;
+        }
+        record = puDoMethod(g_LocWatchList, PUM_TABLE_GETNEXTRECORD,
+            record, 0);
+    }
+
+    return rules;
+}
+
+void FreeAIMissionLocationRules(CSAIMissionLocationRules* rules)
+{
+    if (!rules)
+        return;
+    for (size_t i = 0; i < rules->count; i++)
+        free(rules->entries[i]);
+    free(rules->entries);
+    free(rules);
+}
+
+int CheckAIMissionLocationMatchWithRules(int zoneId, float x, float y,
+    const CSAIMissionLocationRules* rules, char* matchedLocation,
+    int matchedLocationSize)
+{
+    char playfieldName[256] = { 0 };
+    char missionLocation[320] = { 0 };
+
+    if (matchedLocation && matchedLocationSize > 0)
+        matchedLocation[0] = '\0';
+    if (!rules)
+        return -1;
+
+    MissionPF(zoneId, (PUU8*)playfieldName);
+    if (!playfieldName[0])
+        return -1;
+    snprintf(missionLocation, sizeof(missionLocation), "%s (%.1f, %.1f)",
+        playfieldName, x, y);
+    if (!IsSafeAIMissionLocationSearch(missionLocation))
+        return -1;
+
+    for (size_t i = 0; i < rules->count; i++)
+    {
+        if (LocationMatch((PUU8*)missionLocation, (PUU8*)rules->entries[i]))
+        {
+            if (matchedLocation && matchedLocationSize > 0)
+                snprintf(matchedLocation, matchedLocationSize, "%s",
+                    rules->entries[i]);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 int HasAIMissionLocationRules(void)
 {
     PUU32 record;

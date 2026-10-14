@@ -173,9 +173,12 @@ char g_AODir[ MAX_PATH ] = { 0 };
 char g_CSDir[ MAX_PATH ] = { 0 };
 
 HANDLE g_Mutex = INVALID_HANDLE_VALUE;
+static HANDLE g_InstanceMutex = NULL;
+static HANDLE g_InstanceClosingEvent = NULL;
 HANDLE g_Thread = INVALID_HANDLE_VALUE;
 HANDLE g_hThreadExitEvent = NULL;
 HANDLE g_hAbortEvent = NULL;
+volatile LONG g_bPreserveAOHookForAIMonitor = 0;
 static HANDLE g_hItemNameCacheThread = NULL;
 DWORD WINAPI HookManagerThread( void *pParam );
 
@@ -186,19 +189,6 @@ typedef struct {
 } ItemNameCacheContext;
 
 #define WM_CS_ITEM_NAME_CACHE_READY (WM_APP + 44)
-
-static void LogStartupStage(const char *stage)
-{
-    FILE *log = fopen("ClickSaverStartup.log", "a");
-    if (log)
-    {
-        SYSTEMTIME time;
-        GetLocalTime(&time);
-        fprintf(log, "%02u:%02u:%02u.%03u %s\n", time.wHour,
-            time.wMinute, time.wSecond, time.wMilliseconds, stage);
-        fclose(log);
-    }
-}
 
 static DWORD WINAPI ItemNameCacheThread(void *parameter)
 {
@@ -212,7 +202,6 @@ static DWORD WINAPI ItemNameCacheThread(void *parameter)
     BOOL loaded = FALSE;
     sqlite3 *database = NULL;
 
-    LogStartupStage("item cache worker started");
     if (!context)
         return 0;
     safe_strcpy(cachePath, sizeof(cachePath), context->cachePath);
@@ -229,13 +218,11 @@ static DWORD WINAPI ItemNameCacheThread(void *parameter)
 
     if (!needRebuild)
     {
-        LogStartupStage("loading existing item-name cache");
         loaded = LoadItemNameCache(cachePath) != 0;
     }
 
     if (!loaded)
     {
-        LogStartupStage("building item-name cache from database");
         if (sqlite3_open_v2(databasePath, &database, SQLITE_OPEN_READONLY,
             NULL) == SQLITE_OK)
         {
@@ -244,8 +231,6 @@ static DWORD WINAPI ItemNameCacheThread(void *parameter)
             sqlite3_close(database);
         }
     }
-    LogStartupStage(loaded ? "item-name cache ready" : "item-name cache failed");
-
     if (notificationWindow && IsWindow(notificationWindow) &&
         (!g_hThreadExitEvent ||
             WaitForSingleObject(g_hThreadExitEvent, 0) != WAIT_OBJECT_0))
@@ -529,6 +514,12 @@ static ExitLocation g_Exits[] = {
 
 static int g_NumExits = sizeof(g_Exits) / sizeof(g_Exits[0]);
 int g_ExitProximityRadius = 200;
+static int g_AI2UseLocationsSnapshot = 0;
+static int g_AI2UseExitsSnapshot = 0;
+static int g_AI2ExitRadiusSnapshot = 0;
+static unsigned char g_AI2CheckedExitSnapshot[
+	sizeof(g_Exits) / sizeof(g_Exits[0])];
+static CSAIMissionLocationRules* g_AI2LocationRulesSnapshot = NULL;
 static int g_AIMissionActive = 0;
 static DWORD g_AIMissionDifficulty = CS_AI_DIFFICULTY_EASY;
 static char g_AIMissionStatusText[192];
@@ -538,6 +529,7 @@ static char g_AIMissionStatusText[192];
 typedef struct {
     HWND window;
     DWORD processId;
+    char title[192];
     char label[CS_AI_CLIENT_LABEL_SIZE];
 } CSAIMissionClient;
 
@@ -550,10 +542,67 @@ typedef struct {
 static CSAIMissionClient g_AIMissionClients[CS_MAX_AI_MISSION_CLIENTS];
 static int g_AIMissionClientCount = 0;
 static int g_AIMissionClientListOverflow = 0;
+static CSAIMissionClient g_AI2MissionClients[CS_MAX_AI_MISSION_CLIENTS];
+static int g_AI2MissionClientCount = 0;
+static int g_AI2MissionClientListOverflow = 0;
 static HWND g_AIMissionTargetWindow = NULL;
 static DWORD g_AIMissionTargetProcessId = 0;
+static HWND g_AI2TargetWindow = NULL;
+static DWORD g_AI2TargetProcessId = 0;
+static char g_AI2TargetTitle[192];
+static int g_AI2WaitingForClientRestart = 0;
+static DWORD g_AI2LastMonitorHeartbeat = 0;
+static int g_AI2Mode = 0;
+static DWORD g_AI2PendingMissionId = 0;
+static char g_AI2MissionStatusText[192];
+
+#define CS_AI2_MODE_IDLE 0
+#define CS_AI2_MODE_WATCHING 1
+#define CS_AI2_MODE_DELETE 2
 
 static void SetAIMissionStatus(const char* status);
+static void SetAI2Mode(int mode, const char* status);
+static int RefreshAI2MissionClients(void);
+
+static void ClearAI2FilterSnapshot(void)
+{
+    FreeAIMissionLocationRules(g_AI2LocationRulesSnapshot);
+    g_AI2LocationRulesSnapshot = NULL;
+    g_AI2UseLocationsSnapshot = 0;
+    g_AI2UseExitsSnapshot = 0;
+    g_AI2ExitRadiusSnapshot = 0;
+    memset(g_AI2CheckedExitSnapshot, 0,
+        sizeof(g_AI2CheckedExitSnapshot));
+}
+
+static int g_AIAutoMode = 0;
+static int g_AIManualDone = 0;
+static DWORD g_AIManualPendingCommand = 0;
+static DWORD g_AIManualPendingMissionId = 0;
+static void trim_whitespace(char *str);
+
+/* Automatic AI missions are enabled only when the last two non-blank lines of
+   the settings file are ::END:: followed by ::RENEE::. */
+static int DetectAIAutoMode(const char* filename)
+{
+    FILE* fp = fopen(filename, "r");
+    char line[1024];
+    char last[1024] = "";
+    char previous[1024] = "";
+    if (!fp)
+        return 0;
+    while (fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        trim_whitespace(line);
+        if (!line[0])
+            continue;
+        strcpy(previous, last);
+        strcpy(last, line);
+    }
+    fclose(fp);
+    return _stricmp(last, "::RENEE::") == 0 &&
+        _stricmp(previous, "::END::") == 0;
+}
 
 static BOOL CALLBACK FindAIMissionClientsProc(HWND window, LPARAM parameter)
 {
@@ -584,9 +633,81 @@ static BOOL CALLBACK FindAIMissionClientsProc(HWND window, LPARAM parameter)
     CSAIMissionClient* client = &search->clients[search->count++];
     client->window = window;
     client->processId = processId;
+    snprintf(client->title, sizeof(client->title), "%s", title);
     snprintf(client->label, sizeof(client->label), "%s [PID %lu]",
         title[0] ? title : "Anarchy client", (unsigned long)processId);
     return TRUE;
+}
+
+static int ReconnectAI2MissionMonitor(void)
+{
+    CSAIMissionClientSearch search = { 0 };
+    CSAIMissionClient* candidate = NULL;
+    int candidateCount = 0;
+    DWORD oldProcessId = g_AI2TargetProcessId;
+    HWND oldWindow = g_AI2TargetWindow;
+    DWORD windowProcessId = 0;
+
+    if (IsWindow(oldWindow)) {
+        GetWindowThreadProcessId(oldWindow, &windowProcessId);
+        if (windowProcessId == oldProcessId) {
+            DWORD now = GetTickCount();
+            if (now - g_AI2LastMonitorHeartbeat < 5000)
+                return 1;
+            g_AI2LastMonitorHeartbeat = now;
+            if (SendAIMissionCommand(CS_AI_COMMAND_MONITOR_PING, 0, 0,
+                oldWindow, oldProcessId))
+                return 1;
+            if (SendAIMissionCommand(CS_AI_COMMAND_MONITOR_START, 0, 0,
+                oldWindow, oldProcessId)) {
+                if (strstr(g_AI2MissionStatusText,
+                    "AOHook is not responding"))
+                    SetAI2Mode(CS_AI2_MODE_WATCHING,
+                        "watching for a newly accepted mission");
+                return 1;
+            }
+            SetAI2Mode(CS_AI2_MODE_WATCHING,
+                "AOHook is not responding; retrying monitor connection");
+            return 1;
+        }
+    }
+
+    if (!g_AI2WaitingForClientRestart) {
+        g_AI2WaitingForClientRestart = 1;
+        SetAI2Mode(CS_AI2_MODE_WATCHING,
+            "selected AO client closed; waiting for it to restart");
+    }
+
+    EnumWindows(FindAIMissionClientsProc, (LPARAM)&search);
+    if (search.overflow)
+        return 0;
+    for (int i = 0; i < search.count; i++) {
+        CSAIMissionClient* client = &search.clients[i];
+        int isSameProcess = client->processId == oldProcessId;
+        int isSameClient = g_AI2TargetTitle[0]
+            ? _stricmp(client->title, g_AI2TargetTitle) == 0
+            : search.count == 1;
+        if (isSameProcess || isSameClient) {
+            candidate = client;
+            candidateCount++;
+        }
+    }
+
+    if (!candidate || candidateCount != 1)
+        return 0;
+
+    if (!SendAIMissionCommand(CS_AI_COMMAND_MONITOR_START, 0, 0,
+        candidate->window, candidate->processId))
+        return 0;
+
+    g_AI2TargetWindow = candidate->window;
+    g_AI2TargetProcessId = candidate->processId;
+    g_AI2LastMonitorHeartbeat = GetTickCount();
+    g_AI2WaitingForClientRestart = 0;
+    RefreshAI2MissionClients();
+    SetAI2Mode(CS_AI2_MODE_WATCHING,
+        "watching for a newly accepted mission");
+    return 1;
 }
 
 static int RefreshAIMissionClients(void)
@@ -643,6 +764,65 @@ static int RefreshAIMissionClients(void)
     return 1;
 }
 
+static int RefreshAI2MissionClients(void)
+{
+    PULID combo = puGetObjectFromCollection(g_pCol, CS_AI2_CLIENT_SELECTOR);
+    PULID table = puGetObjectFromCollection(g_pCol, CS_AI2_CLIENTS_LIST);
+    CSAIMissionClientSearch search = { 0 };
+    HWND previouslySelected = NULL;
+    int selectedIndex = 0;
+    int oldSelection;
+
+    if (!combo || !table) {
+        WriteLog("Could not refresh the AI2 AO-client selector.");
+        SetAI2Mode(CS_AI2_MODE_IDLE, "could not refresh the AO-client list");
+        return 0;
+    }
+
+    oldSelection = (int)puGetAttribute(combo, PUA_COMBOBOX_SELECTED);
+    if (oldSelection > 0 && oldSelection <= g_AI2MissionClientCount)
+        previouslySelected = g_AI2MissionClients[oldSelection - 1].window;
+
+    EnumWindows(FindAIMissionClientsProc, (LPARAM)&search);
+    g_AI2MissionClientCount = search.count;
+    g_AI2MissionClientListOverflow = search.overflow;
+    memcpy(g_AI2MissionClients, search.clients,
+        search.count * sizeof(g_AI2MissionClients[0]));
+
+    puDoMethod(table, PUM_TABLE_CLEAR, 0, 0);
+    puDoMethod(table, PUM_TABLE_NEWRECORD, 0, 0);
+    puDoMethod(table, PUM_TABLE_ADDRECORD, 0, 0);
+    puDoMethod(table, PUM_TABLE_SETFIELDVAL,
+        (PUU32)"Select an AO client...", 0);
+
+    for (int i = 0; i < g_AI2MissionClientCount; i++) {
+        puDoMethod(table, PUM_TABLE_NEWRECORD, 0, 0);
+        puDoMethod(table, PUM_TABLE_ADDRECORD, 0, 0);
+        puDoMethod(table, PUM_TABLE_SETFIELDVAL,
+            (PUU32)g_AI2MissionClients[i].label, 0);
+        if (g_AI2MissionClients[i].window == previouslySelected)
+            selectedIndex = i + 1;
+        if (g_AI2Mode != CS_AI2_MODE_IDLE &&
+            g_AI2MissionClients[i].processId == g_AI2TargetProcessId)
+            selectedIndex = i + 1;
+    }
+    puSetAttribute(combo, PUA_COMBOBOX_TABLE, (PUU32)table);
+    puSetAttribute(combo, PUA_COMBOBOX_SELECTED, selectedIndex);
+
+    if (g_AI2Mode != CS_AI2_MODE_IDLE)
+        return 1;
+    if (search.overflow) {
+        SetAI2Mode(CS_AI2_MODE_IDLE,
+            "too many AO clients to list; close some and refresh");
+    } else if (!g_AI2MissionClientCount) {
+        SetAI2Mode(CS_AI2_MODE_IDLE,
+            "no AO clients found; start one and refresh");
+    } else {
+        SetAI2Mode(CS_AI2_MODE_IDLE, "select the character");
+    }
+    return 1;
+}
+
 static void SetAIMissionStatus(const char* status)
 {
     PULID statusControl = puGetObjectFromCollection(g_pCol, CS_AI_STATUS);
@@ -652,6 +832,30 @@ static void SetAIMissionStatus(const char* status)
         "Status: %s", status ? status : "unknown");
     puSetAttribute(statusControl, PUA_TEXT_STRING,
         (PUU32)g_AIMissionStatusText);
+    if (!g_AIAutoMode) {
+        PULID manualButton = puGetObjectFromCollection(g_pCol, CS_AI_MANUAL_BUTTON);
+        if (manualButton)
+            puSetAttribute(manualButton, PUA_TEXT_STRING,
+                (PUU32)(g_AIMissionActive ? "Next" : "Start"));
+    }
+}
+
+static void SetAI2Mode(int mode, const char* status)
+{
+    PULID button = puGetObjectFromCollection(g_pCol, CS_AI2_BUTTON);
+    PULID statusControl = puGetObjectFromCollection(g_pCol, CS_AI2_STATUS);
+    if (mode == CS_AI2_MODE_IDLE)
+        ClearAI2FilterSnapshot();
+    g_AI2Mode = mode;
+    snprintf(g_AI2MissionStatusText, sizeof(g_AI2MissionStatusText),
+        "Status: %s", status ? status : "unknown");
+    if (statusControl)
+        puSetAttribute(statusControl, PUA_TEXT_STRING,
+            (PUU32)g_AI2MissionStatusText);
+    if (button)
+        puSetAttribute(button, PUA_TEXT_STRING, (PUU32)(
+            mode == CS_AI2_MODE_WATCHING ? "Stop" :
+            (mode == CS_AI2_MODE_DELETE ? "Delete" : "Start")));
 }
 
 const char* GetMatchedExitName(int zoneId, float x, float y)
@@ -670,6 +874,43 @@ const char* GetMatchedExitName(int zoneId, float x, float y)
         }
     }
     return NULL;
+}
+
+static int CaptureAI2FilterSnapshot(int useLocations, int useExits)
+{
+    CSAIMissionLocationRules* locationRules = NULL;
+
+    if (useLocations) {
+        locationRules = CaptureAIMissionLocationRules();
+        if (!locationRules)
+            return FALSE;
+    }
+
+    ClearAI2FilterSnapshot();
+    g_AI2UseLocationsSnapshot = useLocations;
+    g_AI2UseExitsSnapshot = useExits;
+    g_AI2ExitRadiusSnapshot = g_ExitProximityRadius;
+    for (int i = 0; i < g_NumExits; i++) {
+        PULID checkBox = puGetObjectFromCollection(g_pCol, CS_EXIT_FIRST + i);
+        g_AI2CheckedExitSnapshot[i] = checkBox &&
+            puGetAttribute(checkBox, PUA_CHECKBOX_CHECKED);
+    }
+    g_AI2LocationRulesSnapshot = locationRules;
+    return TRUE;
+}
+
+static int IsAI2MissionNearSnapshotExit(int zoneId, float x, float y)
+{
+    for (int i = 0; i < g_NumExits; i++) {
+        if (g_AI2CheckedExitSnapshot[i] && g_Exits[i].zoneId == zoneId) {
+            float dx = g_Exits[i].x - x;
+            float dy = g_Exits[i].y - y;
+            if (sqrtf(dx * dx + dy * dy) <=
+                (float)g_AI2ExitRadiusSnapshot)
+                return TRUE;
+        }
+    }
+    return FALSE;
 }
 
 static int IsMissionNearCheckedExit(int zoneId, float mx, float my, int radius)
@@ -699,6 +940,20 @@ int HasCheckedAIExit(void)
             return TRUE;
     }
     return FALSE;
+}
+
+static const char* GetAIMissionFilterError(int useLocations, int useExits)
+{
+    int missingLocations = useLocations && !HasAIMissionLocationRules();
+    int missingExits = useExits && !HasCheckedAIExit();
+
+    if (missingLocations && missingExits)
+        return "Locations filter has no valid entries; Exits filter has no checked exits";
+    if (missingLocations)
+        return "Locations filter has no valid entries";
+    if (missingExits)
+        return "Exits filter has no checked exits";
+    return NULL;
 }
 
 void InitDialogColors(void) {
@@ -840,6 +1095,8 @@ void MakeTableEntry(char *dest, size_t destSize, const char *raw);
 
 #define TIMER_BUYINGAGENT 1
 #define TIMER_RESPONSE_WATCHDOG 2
+#define TIMER_AI_TAB_REFRESH 3
+#define AI_TAB_INDEX 5
 static UINT_PTR g_TimerID = 0;
 static int g_PendingAttemptNumber = 0;
 
@@ -2086,6 +2343,8 @@ LRESULT CALLBACK MainWndProcHook( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 {
     if (uMsg == WM_SYSCOMMAND && (wParam & 0xFFF0) == SC_CLOSE)
     {
+        if (g_InstanceClosingEvent)
+            SetEvent(g_InstanceClosingEvent);
         ShowWindow(hWnd, SW_HIDE);
         puPostAppMessage(CSAM_QUIT, 0);
         return 0;
@@ -2111,6 +2370,24 @@ LRESULT CALLBACK MainWndProcHook( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
             KillTimer( hWnd, TIMER_RESPONSE_WATCHDOG );
             puPostAppMessage( CSAM_NO_MISSION_RESPONSE, 0 );
             return 0;
+        }
+        else if (wParam == TIMER_AI_TAB_REFRESH)
+        {
+            static int previousTab = -1;
+            static DWORD lastAI2ReconnectCheck = 0;
+            PULID tabs = puGetObjectFromCollection(g_pCol, CS_TABS);
+            int currentTab = tabs
+                ? (int)puGetAttribute(tabs, PUA_REGISTER_CURRENTTAB)
+                : -1;
+
+            if (currentTab == AI_TAB_INDEX && previousTab != AI_TAB_INDEX)
+                puPostAppMessage(CSAM_AI2_REFRESH_CLIENTS, 0);
+            if (g_AI2Mode == CS_AI2_MODE_WATCHING &&
+                GetTickCount() - lastAI2ReconnectCheck >= 1000) {
+                lastAI2ReconnectCheck = GetTickCount();
+                ReconnectAI2MissionMonitor();
+            }
+            previousTab = currentTab;
         }
     }
     return DefSubclassProc( hWnd, uMsg, wParam, lParam );
@@ -2230,22 +2507,67 @@ static void ImportLocations(const char *filename, int replaceMode)
 
 int main( int argc, char** argv )
 {
-    LogStartupStage("main entered");
+    DWORD mutexError;
+    DWORD waitResult;
+
+    g_InstanceClosingEvent = CreateEventA(NULL, TRUE, FALSE,
+        "ClickSaverInstanceClosing");
+    if (!g_InstanceClosingEvent)
+    {
+        DisplayErrorMessage("Couldn't create the ClickSaver shutdown event.", FALSE);
+        return -1;
+    }
+
+    g_InstanceMutex = CreateMutexA(NULL, TRUE, "ClickSaverInstance");
+    if (!g_InstanceMutex)
+    {
+        CloseHandle(g_InstanceClosingEvent);
+        g_InstanceClosingEvent = NULL;
+        DisplayErrorMessage("Couldn't create the ClickSaver instance mutex.", FALSE);
+        return -1;
+    }
+    mutexError = GetLastError();
+    if (mutexError == ERROR_ALREADY_EXISTS)
+    {
+        waitResult = WaitForSingleObject(g_InstanceClosingEvent, 0);
+        if (waitResult != WAIT_OBJECT_0)
+        {
+            CloseHandle(g_InstanceMutex);
+            g_InstanceMutex = NULL;
+            CloseHandle(g_InstanceClosingEvent);
+            g_InstanceClosingEvent = NULL;
+            return -1;
+        }
+
+        waitResult = WaitForSingleObject(g_InstanceMutex, 15000);
+        if (waitResult != WAIT_OBJECT_0 &&
+            waitResult != WAIT_ABANDONED)
+        {
+            CloseHandle(g_InstanceMutex);
+            g_InstanceMutex = NULL;
+            CloseHandle(g_InstanceClosingEvent);
+            g_InstanceClosingEvent = NULL;
+            if (waitResult == WAIT_FAILED)
+                DisplayErrorMessage("Couldn't wait for the previous ClickSaver instance to close.", FALSE);
+            return -1;
+        }
+    }
+    if (!ResetEvent(g_InstanceClosingEvent))
+    {
+        CloseHandle(g_InstanceMutex);
+        g_InstanceMutex = NULL;
+        CloseHandle(g_InstanceClosingEvent);
+        g_InstanceClosingEvent = NULL;
+        DisplayErrorMessage("Couldn't reset the ClickSaver shutdown event.", FALSE);
+        return -1;
+    }
+
 	if( ( g_Mutex = CreateMutex( NULL, FALSE, "ClickSaver" ) ) == INVALID_HANDLE_VALUE )
     {
         DisplayErrorMessage( "Couldn't create mutex.", FALSE );
         ReleaseAODatabase();
         CleanUp();
         return -1;
-    }
-	
-    if( GetLastError() == ERROR_ALREADY_EXISTS )
-    {
-        HWND hWnd;
-        if( hWnd = FindWindow( "ClickSaverHookWindowClass", "ClickSaverHookWindow" ) )
-        {
-            return -1;
-        }
     }
 	
     pusAppMessage* pAppMsg;
@@ -2262,7 +2584,6 @@ int main( int argc, char** argv )
 	
     SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL );
 
-    LogStartupStage("initializing PUL");
     if( !puInit() )
     {
         return -1;
@@ -2274,7 +2595,6 @@ int main( int argc, char** argv )
         return -1;
     }
 
-    LogStartupStage("creating controls");
     if( !( g_pCol = puCreateObjectCollection( g_GUIDef ) ) )
     {
         CleanUp();
@@ -2289,10 +2609,19 @@ int main( int argc, char** argv )
 
     GetCurrentDirectory( MAX_PATH, g_CSDir );
 
-    LogStartupStage("importing settings");
     ImportSettings( "LastSettings.cs" );
+
+    g_AIAutoMode = DetectAIAutoMode( "LastSettings.cs" );
+    SetAIMissionManualMode( !g_AIAutoMode );
+    {
+        PULID autoButtons = puGetObjectFromCollection( g_pCol, CS_AI_AUTO_BUTTONS );
+        PULID manualGroup = puGetObjectFromCollection( g_pCol, CS_AI_MANUAL_GROUP );
+        if( autoButtons )
+            puSetAttribute( autoButtons, PUA_CONTROL_HIDDEN, !g_AIAutoMode );
+        if( manualGroup )
+            puSetAttribute( manualGroup, PUA_CONTROL_HIDDEN, g_AIAutoMode );
+    }
 	
-    LogStartupStage("loading saved missions");
 	LoadAcceptedMissionStore();
 	
 	PULID delayCtrl = puGetObjectFromCollection(g_pCol, CS_BUYINGAGENTDELAY_ENTRY);
@@ -2334,7 +2663,6 @@ int main( int argc, char** argv )
 	}
 	CloseHandle(hOrigDB);
 	
-    LogStartupStage("opening AO database");
 	if (!OpenLocalDB()) {
 		DisplayErrorMessage("Couldn't open the AO database (rdb.db).", FALSE);
 		CleanUp();
@@ -2355,7 +2683,6 @@ int main( int argc, char** argv )
 		return -1;
 	}
 	
-    LogStartupStage("starting hook manager");
     if( !( g_Thread = CreateThread( NULL, 0, &HookManagerThread, NULL, 0, &dwThreadID ) ) )
     {
         DisplayErrorMessage( "Couldn't create hook thread.", FALSE );
@@ -2376,18 +2703,17 @@ int main( int argc, char** argv )
 	
 	InitDialogColors();
 
-    LogStartupStage("creating main window");
     puSetAttribute(g_MainWin, PUA_WINDOW_OPENED, TRUE);
-    LogStartupStage("main window created");
     HWND hMainWnd = (HWND)puGetAttribute(g_MainWin, PUA_WINDOW_HANDLE);
     if (!hMainWnd)
     {
-        LogStartupStage("main window creation failed");
         DisplayErrorMessage("Could not create the main window.", FALSE);
         CleanUp();
         return -1;
     }
     SetWindowSubclass(hMainWnd, MainWndProcHook, 0, 0);
+    if (!SetTimer(hMainWnd, TIMER_AI_TAB_REFRESH, 250, NULL))
+        WriteLog("Could not start the AI tab client-refresh monitor.");
     if (hIcon)
     {
         SendMessage(hMainWnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
@@ -2417,7 +2743,6 @@ int main( int argc, char** argv )
         return -1;
     }
 
-    LogStartupStage("entering application message loop");
     do
     {
         pAppMsg = puWaitAppMessages();
@@ -2463,6 +2788,103 @@ int main( int argc, char** argv )
         case CSAM_AI_REFRESH_CLIENTS:
             RefreshAIMissionClients();
             break;
+        case CSAM_AI2_REFRESH_CLIENTS:
+            RefreshAI2MissionClients();
+            break;
+        case CSAM_AI2_ACTION:
+            if (g_AI2Mode == CS_AI2_MODE_WATCHING) {
+                if (g_AI2WaitingForClientRestart) {
+                    g_AI2WaitingForClientRestart = 0;
+                    SetAI2Mode(CS_AI2_MODE_IDLE, "stopped");
+                    break;
+                }
+                if (!SendAIMissionCommand(CS_AI_COMMAND_MONITOR_STOP,
+                    0, 0, g_AI2TargetWindow, g_AI2TargetProcessId)) {
+                    SetAI2Mode(CS_AI2_MODE_WATCHING,
+                        "could not reach AOHook; still watching");
+                } else {
+                    SetAI2Mode(CS_AI2_MODE_IDLE, "stopped");
+                }
+                break;
+            }
+            if (g_AI2Mode == CS_AI2_MODE_DELETE) {
+                if (!g_AI2PendingMissionId ||
+                    !SendAIMissionCommand(
+                        CS_AI_COMMAND_DELETE_MONITORED_MISSION, 0,
+                        g_AI2PendingMissionId, g_AI2TargetWindow,
+                        g_AI2TargetProcessId)) {
+                    SetAI2Mode(CS_AI2_MODE_DELETE,
+                        "could not delete mission; try again");
+                } else {
+                    g_AI2PendingMissionId = 0;
+                    SetAI2Mode(CS_AI2_MODE_WATCHING,
+                        "mission deleted; watching for the next mission");
+                }
+                break;
+            }
+            {
+                int useLocations = puGetAttribute(
+                    puGetObjectFromCollection(g_pCol, CS_AI2_USE_LOCATIONS),
+                    PUA_CHECKBOX_CHECKED);
+                int useExits = puGetAttribute(
+                    puGetObjectFromCollection(g_pCol, CS_AI2_USE_EXITS),
+                    PUA_CHECKBOX_CHECKED);
+                int selectedClient = (int)puGetAttribute(
+                    puGetObjectFromCollection(g_pCol, CS_AI2_CLIENT_SELECTOR),
+                    PUA_COMBOBOX_SELECTED);
+
+                if (g_bBuyingAgentActive || g_AIMissionActive) {
+                    SetAI2Mode(CS_AI2_MODE_IDLE,
+                        "stop the Buying Agent and AI mission mode first");
+                    break;
+                }
+                if (g_AI2MissionClientListOverflow) {
+                    SetAI2Mode(CS_AI2_MODE_IDLE,
+                        "too many AO clients; close some and refresh");
+                    break;
+                }
+                if (selectedClient <= 0 ||
+                    selectedClient > g_AI2MissionClientCount) {
+                    SetAI2Mode(CS_AI2_MODE_IDLE,
+                        "refresh the client list and select an AO client");
+                    break;
+                }
+                if (!useLocations && !useExits) {
+                    SetAI2Mode(CS_AI2_MODE_IDLE,
+                        "enable at least one destination filter");
+                    break;
+                }
+                const char* filterError =
+                    GetAIMissionFilterError(useLocations, useExits);
+                if (filterError) {
+                    SetAI2Mode(CS_AI2_MODE_IDLE,
+                        filterError);
+                    break;
+                }
+                if (!CaptureAI2FilterSnapshot(useLocations, useExits)) {
+                    SetAI2Mode(CS_AI2_MODE_IDLE,
+                        "could not save the destination filters; monitor not started");
+                    break;
+                }
+                g_AI2TargetWindow =
+                    g_AI2MissionClients[selectedClient - 1].window;
+                g_AI2TargetProcessId =
+                    g_AI2MissionClients[selectedClient - 1].processId;
+                snprintf(g_AI2TargetTitle, sizeof(g_AI2TargetTitle), "%s",
+                    g_AI2MissionClients[selectedClient - 1].title);
+                g_AI2WaitingForClientRestart = 0;
+                if (!SendAIMissionCommand(CS_AI_COMMAND_MONITOR_START,
+                    0, 0, g_AI2TargetWindow, g_AI2TargetProcessId)) {
+                    SetAI2Mode(CS_AI2_MODE_IDLE,
+                        "could not reach AOHook in this client; wait for it to load, then retry");
+                    break;
+                }
+                g_AI2LastMonitorHeartbeat = GetTickCount();
+                g_AI2PendingMissionId = 0;
+                SetAI2Mode(CS_AI2_MODE_WATCHING,
+                    "watching for a newly accepted mission");
+            }
+            break;
         case CSAM_AI_START:
             {
                 int useLocations = puGetAttribute(
@@ -2485,6 +2907,10 @@ int main( int argc, char** argv )
                     SetAIMissionStatus("already running");
                     break;
                 }
+                if (g_AI2Mode != CS_AI2_MODE_IDLE) {
+                    SetAIMissionStatus("stop or resolve the AI2 mission monitor first");
+                    break;
+                }
                 if (g_bBuyingAgentActive) {
                     SetAIMissionStatus("stop the Buying Agent before starting");
                     break;
@@ -2493,9 +2919,10 @@ int main( int argc, char** argv )
                     SetAIMissionStatus("enable at least one destination filter");
                     break;
                 }
-                if ((useLocations && !HasAIMissionLocationRules()) ||
-                    (useExits && !HasCheckedAIExit())) {
-                    SetAIMissionStatus("the selected destination filter has no rules");
+                const char* filterError =
+                    GetAIMissionFilterError(useLocations, useExits);
+                if (filterError) {
+                    SetAIMissionStatus(filterError);
                     break;
                 }
                 if ((hasEasy + hasNormal + hasHard) != 1) {
@@ -2527,10 +2954,45 @@ int main( int argc, char** argv )
                     SetAIMissionStatus("AOHook not ready for the selected client; refresh after it loads");
                     break;
                 }
+                g_AIManualDone = 0;
                 g_AIMissionActive = 1;
                 SetAIMissionStatus("starting conversation with the selected character's officer");
                 break;
             }
+        case CSAM_AI_NEXT:
+            if (g_AIAutoMode)
+                break;
+            if (!g_AIMissionActive) {
+                puPostAppMessage(CSAM_AI_START, 0);
+                break;
+            }
+            if (g_AIManualPendingCommand) {
+                DWORD command = g_AIManualPendingCommand;
+                DWORD missionId = g_AIManualPendingMissionId;
+                g_AIManualPendingCommand = 0;
+                g_AIManualPendingMissionId = 0;
+                if (!SendAIMissionCommand(command, g_AIMissionDifficulty,
+                    missionId, g_AIMissionTargetWindow,
+                    g_AIMissionTargetProcessId)) {
+                    SendAIMissionCommand(CS_AI_COMMAND_STOP,
+                        g_AIMissionDifficulty, 0, g_AIMissionTargetWindow,
+                        g_AIMissionTargetProcessId);
+                    g_AIMissionActive = 0;
+                    SetAIMissionStatus("could not send the step to AOHook; stopped");
+                } else if (command == CS_AI_COMMAND_ACCEPT_MISSION) {
+                    g_AIManualDone = 1;
+                    g_AIMissionActive = 0;
+                    SetAIMissionStatus("mission kept; closing the officer dialogue");
+                } else {
+                    SetAIMissionStatus("deleting the mission");
+                }
+                break;
+            }
+            if (!SendAIMissionCommand(CS_AI_COMMAND_NEXT,
+                g_AIMissionDifficulty, 0, g_AIMissionTargetWindow,
+                g_AIMissionTargetProcessId))
+                SetAIMissionStatus("delete/complete accepted mission before starting");
+            break;
         case CSAM_AI_STOP:
             if (!SendAIMissionCommand(CS_AI_COMMAND_STOP,
                 g_AIMissionDifficulty, 0, g_AIMissionTargetWindow,
@@ -2547,13 +3009,71 @@ int main( int argc, char** argv )
                     (CSAIMissionEvent*)(PUU32)pAppMsg->Param;
                 if (!event)
                     break;
+                if (event->type == CS_AI_EVENT_MONITOR_STATUS) {
+                    if (event->clientWindow == g_AI2TargetWindow &&
+                        event->clientProcessId == g_AI2TargetProcessId)
+                        SetAI2Mode(CS_AI2_MODE_IDLE, event->status);
+                    free(event);
+                    break;
+                }
+                if (event->type == CS_AI_EVENT_MONITORED_MISSION) {
+                    if (g_AI2Mode == CS_AI2_MODE_IDLE ||
+                        event->clientWindow != g_AI2TargetWindow ||
+                        event->clientProcessId != g_AI2TargetProcessId) {
+                        free(event);
+                        break;
+                    }
+                    char matchedLocation[256] = "";
+                    int locationResult = g_AI2UseLocationsSnapshot
+                        ? CheckAIMissionLocationMatchWithRules(event->zoneId,
+                            event->x, event->y, g_AI2LocationRulesSnapshot,
+                            matchedLocation, sizeof(matchedLocation))
+                        : TRUE;
+                    if (event->status[0] || locationResult < 0) {
+                        g_AI2PendingMissionId = event->missionId;
+                        SetAI2Mode(CS_AI2_MODE_DELETE,
+                            "could not check destination; click Delete to remove it");
+                    } else {
+                        int locationMatches =
+                            !g_AI2UseLocationsSnapshot || locationResult > 0;
+                        int exitMatches = !g_AI2UseExitsSnapshot ||
+                            IsAI2MissionNearSnapshotExit(event->zoneId,
+                                event->x, event->y);
+                        if (locationMatches && exitMatches) {
+                            if (SendAIMissionCommand(
+                                CS_AI_COMMAND_MONITOR_STOP, 0, 0,
+                                g_AI2TargetWindow,
+                                g_AI2TargetProcessId)) {
+                                g_AI2PendingMissionId = 0;
+                                SetAI2Mode(CS_AI2_MODE_IDLE,
+                                    "destination matches; mission kept");
+                            } else {
+                                SetAI2Mode(CS_AI2_MODE_WATCHING,
+                                    "destination matches; press Stop to finish");
+                            }
+                        } else {
+                            g_AI2PendingMissionId = event->missionId;
+                            SetAI2Mode(CS_AI2_MODE_DELETE,
+                                "destination mismatch; click Delete to remove it");
+                        }
+                    }
+                    free(event);
+                    break;
+                }
                 if (event->clientWindow != g_AIMissionTargetWindow ||
                     event->clientProcessId != g_AIMissionTargetProcessId) {
                     free(event);
                     break;
                 }
                 if (event->type == CS_AI_EVENT_STATUS) {
-                    g_AIMissionActive = event->state != CS_AI_STATE_STOPPED;
+                    if (event->state == CS_AI_STATE_STOPPED)
+                        g_AIManualDone = 0;
+                    g_AIMissionActive = !g_AIManualDone &&
+                        event->state != CS_AI_STATE_STOPPED;
+                    if (!g_AIMissionActive) {
+                        g_AIManualPendingCommand = 0;
+                        g_AIManualPendingMissionId = 0;
+                    }
                     SetAIMissionStatus(event->status);
                 } else if (event->type == CS_AI_EVENT_MISSION) {
                     int useLocations = puGetAttribute(
@@ -2585,7 +3105,13 @@ int main( int argc, char** argv )
                             ? CS_AI_COMMAND_ACCEPT_MISSION
                             : CS_AI_COMMAND_REJECT_MISSION;
 
-                        if (!SendAIMissionCommand(command,
+                        if (!g_AIAutoMode) {
+                            g_AIManualPendingCommand = command;
+                            g_AIManualPendingMissionId = event->missionId;
+                            SetAIMissionStatus(command == CS_AI_COMMAND_ACCEPT_MISSION
+                                ? "destination matches; press Next to keep the mission"
+                                : "destination does not match; press Next to delete it");
+                        } else if (!SendAIMissionCommand(command,
                             g_AIMissionDifficulty, event->missionId,
                             g_AIMissionTargetWindow,
                             g_AIMissionTargetProcessId)) {
@@ -3430,6 +3956,17 @@ int main( int argc, char** argv )
     }
     while( pAppMsg->Message != CSAM_QUIT );
 
+    int preserveAOHookForMonitor = g_AI2Mode != CS_AI2_MODE_IDLE;
+    if (g_AI2Mode == CS_AI2_MODE_WATCHING &&
+        !SendAIMissionCommand(CS_AI_COMMAND_MONITOR_STOP, 0, 0,
+            g_AI2TargetWindow, g_AI2TargetProcessId))
+        WriteLog("Could not stop the AI mission monitor during shutdown.");
+
+    if (g_InstanceClosingEvent)
+        SetEvent(g_InstanceClosingEvent);
+    InterlockedExchange(&g_bPreserveAOHookForAIMonitor,
+        preserveAOHookForMonitor);
+
     WriteDebug( NULL );
     SetCurrentDirectory( g_CSDir );
 	BackupLastSettings();
@@ -3462,6 +3999,18 @@ void CleanUp()
     if( g_Mutex != INVALID_HANDLE_VALUE )
     {
         CloseHandle( g_Mutex );
+    }
+
+    if (g_InstanceMutex)
+    {
+        CloseHandle(g_InstanceMutex);
+        g_InstanceMutex = NULL;
+    }
+
+    if (g_InstanceClosingEvent)
+    {
+        CloseHandle(g_InstanceClosingEvent);
+        g_InstanceClosingEvent = NULL;
     }
     
     if (g_hThreadExitEvent != NULL) 
@@ -3709,13 +4258,13 @@ void ImportSettings( char* filename )
                 case CFG_AI_MISSION_USE_LOCATIONS:
                     if (sscanf(Value, "%u", &Val) == 1 && Val <= 1)
                         puSetAttribute(puGetObjectFromCollection(g_pCol,
-                            CS_AI_USE_LOCATIONS), PUA_CHECKBOX_CHECKED,
+                            CS_AI2_USE_LOCATIONS), PUA_CHECKBOX_CHECKED,
                             Val ? TRUE : FALSE);
                     break;
                 case CFG_AI_MISSION_USE_EXITS:
                     if (sscanf(Value, "%u", &Val) == 1 && Val <= 1)
                         puSetAttribute(puGetObjectFromCollection(g_pCol,
-                            CS_AI_USE_EXITS), PUA_CHECKBOX_CHECKED,
+                            CS_AI2_USE_EXITS), PUA_CHECKBOX_CHECKED,
                             Val ? TRUE : FALSE);
                     break;
                 case CFG_WINDOWWIDTH:
@@ -3975,10 +4524,10 @@ BOOL ExportSettings( char* filename )
                 CS_AI_DIFFICULTY_HARD_CONTROL), PUA_CHECKBOX_CHECKED)
                 ? CS_AI_DIFFICULTY_HARD : CS_AI_DIFFICULTY_EASY));
     fprintf(fp, "AI_MISSION_USE_LOCATIONS::%u\n",
-        puGetAttribute(puGetObjectFromCollection(g_pCol, CS_AI_USE_LOCATIONS),
+        puGetAttribute(puGetObjectFromCollection(g_pCol, CS_AI2_USE_LOCATIONS),
             PUA_CHECKBOX_CHECKED));
     fprintf(fp, "AI_MISSION_USE_EXITS::%u\n",
-        puGetAttribute(puGetObjectFromCollection(g_pCol, CS_AI_USE_EXITS),
+        puGetAttribute(puGetObjectFromCollection(g_pCol, CS_AI2_USE_EXITS),
             PUA_CHECKBOX_CHECKED));
     fprintf( fp, "BUYINGAGENTMAXTRIES::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENTTRIES ), PUA_TEXTENTRY_VALUE ) );
     fprintf( fp, "BUYINGAGENTMISH::%u\n", puGetAttribute( puGetObjectFromCollection( g_pCol, CS_BUYINGAGENTMISH ), PUA_TEXTENTRY_VALUE ) );
@@ -4114,6 +4663,8 @@ BOOL ExportSettings( char* filename )
         Record = puDoMethod( g_LocWatchList, PUM_TABLE_GETNEXTRECORD, Record, 0 );
     }
     fprintf( fp, "::END::\n" );
+    if( g_AIAutoMode )
+        fprintf( fp, "::RENEE::\n" );
     return fclose( fp ) == 0;
 }
 

@@ -79,6 +79,7 @@ Message_t* ( *pOriginalDataBlockToMessage )( int _Size, void* _pDataBlock );
 #define AI_STATE_WAITING_FOR_DELETION CS_AI_STATE_WAITING_FOR_DELETION
 #define AI_STATE_WAITING_FOR_REOPEN CS_AI_STATE_WAITING_FOR_REOPEN
 #define AI_STATE_WAITING_FOR_CLOSE CS_AI_STATE_WAITING_FOR_CLOSE
+#define AI_STATE_WAITING_FOR_RESTART CS_AI_STATE_WAITING_FOR_RESTART
 
 typedef struct AOIdentity
 {
@@ -130,13 +131,22 @@ static HANDLE g_hAICommandThread = NULL;
 static HWND g_hAICommandWindow = NULL;
 static HWND g_ClickSaverWindow = NULL;
 static volatile LONG g_AIMissionState = AI_STATE_STOPPED;
+static volatile LONG g_AI2Monitoring = 0;
+static volatile LONG g_AI2PendingMissionId = 0;
+static volatile LONG g_AILastMissionSnapshotTick = 0;
+static volatile LONG g_AIMissionSnapshotFailureCount = 0;
+static volatile LONG g_AIMissionSnapshotFailureReported = 0;
 static DWORD g_AIMissionDifficulty = CS_AI_DIFFICULTY_EASY;
 static volatile LONG g_AIPendingMissionId = 0;
+static volatile LONG g_AIManualMode = 0;
+static volatile LONG g_AIStepGranted = 0;
 static volatile LONG g_bAIGoodbyeSelected = 0;
 static volatile LONG g_AILastAnswerListGeneration = 0;
 static volatile LONG g_AIGoodbyeAnswerGeneration = 0;
 static AOIdentity g_AINpcIdentity = { 0, 0 };
+static volatile LONG g_AIKeptMissionId = 0;
 static AcceptedMissionSnapshot g_AIMissionBaseline = { 0 };
+static AcceptedMissionSnapshot g_AI2MissionBaseline = { 0 };
 static CRITICAL_SECTION g_AIMissionBaselineLock;
 static volatile LONG g_bBaselineLockInitialized = 0;
 static volatile LONG g_bDataBlockHookInstalled = 0;
@@ -301,18 +311,18 @@ static void WriteBE32(BYTE* destination, DWORD value)
     destination[3] = (BYTE)value;
 }
 
-static void SendAIEvent(HWND clickSaverWindow, CSAIMissionEvent* event)
+static BOOL SendAIEvent(HWND clickSaverWindow, CSAIMissionEvent* event)
 {
     COPYDATASTRUCT data = { 0 };
     DWORD_PTR result = 0;
     if (!clickSaverWindow || !event)
-        return;
+        return FALSE;
     data.dwData = CS_AI_EVENT_COPYDATA;
     data.cbData = sizeof(*event);
     data.lpData = event;
-    SendMessageTimeoutA(clickSaverWindow, WM_COPYDATA,
+    return SendMessageTimeoutA(clickSaverWindow, WM_COPYDATA,
         (WPARAM)GetAOClientWindow(), (LPARAM)&data,
-        SMTO_ABORTIFHUNG, 1000, &result);
+        SMTO_ABORTIFHUNG, 1000, &result) != 0 && result != 0;
 }
 
 static void SendAIStatus(const char* status)
@@ -321,6 +331,14 @@ static void SendAIStatus(const char* status)
     event.type = CS_AI_EVENT_STATUS;
     event.state = (DWORD)InterlockedCompareExchange(&g_AIMissionState,
         AI_STATE_STOPPED, AI_STATE_STOPPED);
+    snprintf(event.status, sizeof(event.status), "%s", status ? status : "");
+    SendAIEvent(g_ClickSaverWindow, &event);
+}
+
+static void SendAI2Status(const char* status)
+{
+    CSAIMissionEvent event = { 0 };
+    event.type = CS_AI_EVENT_MONITOR_STATUS;
     snprintf(event.status, sizeof(event.status), "%s", status ? status : "");
     SendAIEvent(g_ClickSaverWindow, &event);
 }
@@ -695,6 +713,15 @@ static LRESULT HandleAIAnswerList(const AIAnswerList* answerList)
         return 0;
     }
 
+    if (InterlockedCompareExchange(&g_AIManualMode, 0, 0) &&
+        !InterlockedExchange(&g_AIStepGranted, 0))
+    {
+        SendAIStatus(state == AI_STATE_WAITING_FOR_CONFIRMATION
+            ? "ready: press Next to confirm eligibility"
+            : "ready: press Next to choose the difficulty");
+        return 0;
+    }
+
     if (state == AI_STATE_WAITING_FOR_DIFFICULTY &&
         !TryReadAcceptedMissionSnapshot(&missionBaseline))
     {
@@ -726,6 +753,8 @@ static LRESULT HandleAIAnswerList(const AIAnswerList* answerList)
     return 1;
 }
 
+static BOOL EnsureMissionScannerThread(DWORD* errorCode);
+
 static BOOL HandleAICommand(const CSAIMissionCommand* command)
 {
     if (!command)
@@ -737,10 +766,28 @@ static BOOL HandleAICommand(const CSAIMissionCommand* command)
         {
             AOIdentity target = { 0, 0 };
             AcceptedMissionSnapshot snapshot = { 0 };
+            if (command->manual)
+            {
+                // The Goodbye retry loop can spin forever if the dialogue was
+                // closed by hand; a manual Start always begins a fresh run.
+                KillTimer(g_hAICommandWindow, TIMER_AI_REOPEN_CHAT);
+                InterlockedExchange(&g_AIPendingMissionId, 0);
+                InterlockedExchange(&g_AIMissionState, AI_STATE_STOPPED);
+            }
             if (InterlockedCompareExchange(&g_AIMissionState,
                 AI_STATE_STOPPED, AI_STATE_STOPPED) != AI_STATE_STOPPED)
             {
                 SendAIStatus("AI missions are already running");
+                return FALSE;
+            }
+            if (InterlockedCompareExchange(&g_AI2Monitoring, 0, 0))
+            {
+                SendAIStatus("stop the AI mission monitor first");
+                return FALSE;
+            }
+            if (InterlockedCompareExchange(&g_AI2PendingMissionId, 0, 0))
+            {
+                SendAIStatus("delete the pending AI mission before starting");
                 return FALSE;
             }
             if (command->difficulty > CS_AI_DIFFICULTY_HARD)
@@ -758,9 +805,25 @@ static BOOL HandleAICommand(const CSAIMissionCommand* command)
                 SendAIStatus("could not read current missions");
                 return FALSE;
             }
+            if (command->manual && g_AIKeptMissionId)
+            {
+                BOOL stillThere = FALSE;
+                for (DWORD k = 0; k < snapshot.count; k++)
+                    if (snapshot.missionIds[k] == (DWORD)g_AIKeptMissionId)
+                        stillThere = TRUE;
+                if (!stillThere)
+                    InterlockedExchange(&g_AIKeptMissionId, 0);
+            }
+            if (command->manual && g_AIKeptMissionId)
+            {
+                SendAIStatus("delete/complete current mission before starting");
+                return FALSE;
+            }
 
             g_AINpcIdentity = target;
             g_AIMissionDifficulty = command->difficulty;
+            InterlockedExchange(&g_AIManualMode, command->manual ? 1 : 0);
+            InterlockedExchange(&g_AIStepGranted, 0);
             InterlockedExchange(&g_bAIGoodbyeSelected, 0);
             InterlockedExchange(&g_AILastAnswerListGeneration, 0);
             InterlockedExchange(&g_AIGoodbyeAnswerGeneration, 0);
@@ -779,6 +842,126 @@ static BOOL HandleAICommand(const CSAIMissionCommand* command)
             SendAIStatus("officer dialogue opened");
             return TRUE;
         }
+    case CS_AI_COMMAND_MONITOR_START:
+        {
+            AcceptedMissionSnapshot snapshot = { 0 };
+            DWORD scannerError = ERROR_SUCCESS;
+            if (!EnsureMissionScannerThread(&scannerError))
+            {
+                char status[160];
+                snprintf(status, sizeof(status),
+                    "could not start the accepted-mission scanner (error %lu)",
+                    (unsigned long)scannerError);
+                SendAI2Status(status);
+                return FALSE;
+            }
+            if (InterlockedCompareExchange(&g_AIMissionState,
+                AI_STATE_STOPPED, AI_STATE_STOPPED) != AI_STATE_STOPPED)
+            {
+                SendAI2Status("the AI mission mode is active in this AO client; stop it first");
+                return FALSE;
+            }
+            if (!TryReadAcceptedMissionSnapshot(&snapshot))
+            {
+                SendAI2Status("could not read this AO client's accepted missions");
+                return FALSE;
+            }
+
+            EnterCriticalSection(&g_AIMissionBaselineLock);
+            g_AI2MissionBaseline = snapshot;
+            LeaveCriticalSection(&g_AIMissionBaselineLock);
+            InterlockedExchange(&g_AI2PendingMissionId, 0);
+            InterlockedExchange(&g_AI2Monitoring, 1);
+            return TRUE;
+        }
+    case CS_AI_COMMAND_PREPARE_UNLOAD:
+        // Joining the scanner inside DllMain deadlocks on the loader lock and
+        // leaves a half-unloaded AOHook behind, so stop it before FreeLibrary.
+        InterlockedExchange(&g_AI2Monitoring, 0);
+        InterlockedExchange(&g_AI2PendingMissionId, 0);
+        InterlockedExchange(&g_bStopMissionScanner, 1);
+        if (g_hMissionScannerThread)
+        {
+            WaitForSingleObject(g_hMissionScannerThread, 5000);
+            CloseHandle(g_hMissionScannerThread);
+            g_hMissionScannerThread = NULL;
+        }
+        if (g_hAICommandWindow)
+            PostMessageA(g_hAICommandWindow, WM_CLOSE, 0, 0);
+        return TRUE;
+    case CS_AI_COMMAND_MONITOR_STOP:
+        InterlockedExchange(&g_AI2Monitoring, 0);
+        InterlockedExchange(&g_AI2PendingMissionId, 0);
+        return TRUE;
+    case CS_AI_COMMAND_MONITOR_PING:
+        {
+            DWORD lastSnapshotTick = (DWORD)InterlockedCompareExchange(
+                &g_AILastMissionSnapshotTick, 0, 0);
+            return InterlockedCompareExchange(&g_AI2Monitoring, 0, 0) != 0 &&
+                EnsureMissionScannerThread(NULL) && lastSnapshotTick != 0 &&
+                (DWORD)(GetTickCount() - lastSnapshotTick) <= 10000;
+        }
+    case CS_AI_COMMAND_DELETE_MONITORED_MISSION:
+        {
+            AcceptedMissionSnapshot snapshot = { 0 };
+            BOOL missionStillPresent = FALSE;
+            if (!command->missionId ||
+                (DWORD)InterlockedCompareExchange(
+                    &g_AI2PendingMissionId, 0, 0) != command->missionId ||
+                !TryReadAcceptedMissionSnapshot(&snapshot))
+                return FALSE;
+            for (DWORD i = 0; i < snapshot.count; i++)
+                if (snapshot.missionIds[i] == command->missionId)
+                    missionStillPresent = TRUE;
+            if (!missionStillPresent)
+            {
+                EnterCriticalSection(&g_AIMissionBaselineLock);
+                g_AI2MissionBaseline = snapshot;
+                LeaveCriticalSection(&g_AIMissionBaselineLock);
+                InterlockedExchange(&g_AI2PendingMissionId, 0);
+                InterlockedExchange(&g_AI2Monitoring, 1);
+                return TRUE;
+            }
+            if (!SendMissionDelete(command->missionId))
+                return FALSE;
+            EnterCriticalSection(&g_AIMissionBaselineLock);
+            g_AI2MissionBaseline = snapshot;
+            LeaveCriticalSection(&g_AIMissionBaselineLock);
+            InterlockedExchange(&g_AI2PendingMissionId, 0);
+            InterlockedExchange(&g_AI2Monitoring, 1);
+            return TRUE;
+        }
+    case CS_AI_COMMAND_NEXT:
+        {
+            LONG state = InterlockedCompareExchange(&g_AIMissionState,
+                AI_STATE_STOPPED, AI_STATE_STOPPED);
+            if (!InterlockedCompareExchange(&g_AIManualMode, 0, 0))
+                return FALSE;
+            if (state == AI_STATE_WAITING_FOR_CONFIRMATION ||
+                state == AI_STATE_WAITING_FOR_DIFFICULTY)
+            {
+                InterlockedExchange(&g_AIStepGranted, 1);
+                HandleAIAnswerList(&g_AILastAnswerList);
+                return TRUE;
+            }
+            if (state == AI_STATE_WAITING_FOR_RESTART)
+            {
+                InterlockedExchange(&g_AIStepGranted, 0);
+                InterlockedExchange(&g_bAIGoodbyeSelected, 0);
+                InterlockedExchange(&g_AIMissionState,
+                    AI_STATE_WAITING_FOR_CONFIRMATION);
+                if (!SendOpenChatWindow(g_AINpcIdentity))
+                {
+                    InterlockedExchange(&g_AIMissionState, AI_STATE_STOPPED);
+                    SendAIStatus("could not reopen officer dialogue");
+                    return FALSE;
+                }
+                SendAIStatus("officer dialogue reopened");
+                return TRUE;
+            }
+            SendAIStatus("delete/complete current mission before starting");
+            return FALSE;
+        }
     case CS_AI_COMMAND_STOP:
         InterlockedExchange(&g_AIMissionState, AI_STATE_STOPPED);
         InterlockedExchange(&g_AIPendingMissionId, 0);
@@ -788,6 +971,7 @@ static BOOL HandleAICommand(const CSAIMissionCommand* command)
             AI_STATE_STOPPED, AI_STATE_STOPPED) != AI_STATE_WAITING_FOR_DECISION ||
             command->missionId != g_AIPendingMissionId)
             return FALSE;
+        InterlockedExchange(&g_AIKeptMissionId, (LONG)command->missionId);
         InterlockedExchange(&g_AIPendingMissionId, 0);
         InterlockedExchange(&g_bAIGoodbyeSelected, 0);
         InterlockedExchange(&g_AIMissionState, AI_STATE_WAITING_FOR_CLOSE);
@@ -956,6 +1140,14 @@ static LRESULT CALLBACK AICommandWndProc(HWND window, UINT message,
             }
 
             InterlockedExchange(&g_AIPendingMissionId, 0);
+            if (InterlockedCompareExchange(&g_AIManualMode, 0, 0))
+            {
+                InterlockedExchange(&g_bAIGoodbyeSelected, 0);
+                InterlockedExchange(&g_AIMissionState,
+                    AI_STATE_WAITING_FOR_RESTART);
+                SendAIStatus("mission deleted; press Next to reopen the officer dialogue");
+                return 1;
+            }
             InterlockedExchange(&g_AIMissionState,
                 AI_STATE_WAITING_FOR_CONFIRMATION);
             InterlockedExchange(&g_bAIGoodbyeSelected, 0);
@@ -1021,9 +1213,53 @@ static DWORD WINAPI AcceptedMissionScannerThread(void*)
         AcceptedMissionSnapshot snapshot = { 0 };
         HWND clickSaverWindow = NULL;
         HWND aoWindow = GetAOClientWindow();
+        BOOL snapshotRead = aoWindow &&
+            TryReadAcceptedMissionSnapshot(&snapshot);
 
-        if (aoWindow && TryReadAcceptedMissionSnapshot(&snapshot))
+        if (snapshotRead)
         {
+            InterlockedExchange(&g_AILastMissionSnapshotTick,
+                (LONG)GetTickCount());
+            InterlockedExchange(&g_AIMissionSnapshotFailureCount, 0);
+            InterlockedExchange(&g_AIMissionSnapshotFailureReported, 0);
+            if (InterlockedCompareExchange(&g_AI2Monitoring, 0, 0))
+            {
+                AcceptedMissionSnapshot baseline = { 0 };
+                EnterCriticalSection(&g_AIMissionBaselineLock);
+                baseline = g_AI2MissionBaseline;
+                LeaveCriticalSection(&g_AIMissionBaselineLock);
+                for (DWORD i = 0; i < snapshot.count; i++)
+                {
+                    DWORD j;
+                    for (j = 0; j < baseline.count; j++)
+                        if (snapshot.missionIds[i] == baseline.missionIds[j])
+                            break;
+                    if (j == baseline.count &&
+                        InterlockedCompareExchange(&g_AI2Monitoring, 2, 1) == 1)
+                    {
+                        CSAIMissionEvent event = { 0 };
+                        event.type = CS_AI_EVENT_MONITORED_MISSION;
+                        event.missionId = snapshot.missionIds[i];
+                        InterlockedExchange(&g_AI2PendingMissionId,
+                            (LONG)event.missionId);
+                        BOOL hasLocation = TryGetMissionLocation(
+                            event.missionId, &event.zoneId, &event.x,
+                            &event.y);
+                        if (!hasLocation)
+                            snprintf(event.status, sizeof(event.status), "%s",
+                                "could not read the new mission destination");
+
+                        if (!SendAIEvent(g_ClickSaverWindow, &event))
+                        {
+                            InterlockedCompareExchange(&g_AI2Monitoring, 1, 2);
+                            InterlockedCompareExchange(&g_AI2PendingMissionId,
+                                0, (LONG)event.missionId);
+                        }
+                        break;
+                    }
+                }
+            }
+
             LONG aiState = InterlockedCompareExchange(&g_AIMissionState,
                 AI_STATE_STOPPED, AI_STATE_STOPPED);
             if (aiState == AI_STATE_WAITING_FOR_MISSION)
@@ -1052,9 +1288,7 @@ static DWORD WINAPI AcceptedMissionScannerThread(void*)
                         if (TryGetMissionLocation(event.missionId,
                             &event.zoneId, &event.x, &event.y))
                         {
-                            SendAIEvent(FindWindowA(
-                                "ClickSaverHookWindowClass",
-                                "ClickSaverHookWindow"), &event);
+                            SendAIEvent(g_ClickSaverWindow, &event);
                         }
                         else
                         {
@@ -1120,6 +1354,17 @@ static DWORD WINAPI AcceptedMissionScannerThread(void*)
                 }
             }
         }
+        else if (aoWindow &&
+            InterlockedCompareExchange(&g_AI2Monitoring, 0, 0) == 1)
+        {
+            LONG failures = InterlockedIncrement(
+                &g_AIMissionSnapshotFailureCount);
+            if (failures >= 5 &&
+                InterlockedCompareExchange(
+                    &g_AIMissionSnapshotFailureReported, 1, 0) == 0)
+                SendAI2Status(
+                    "AOHook cannot read accepted missions from this AO client");
+        }
 
         if (!clickSaverWindow || !aoWindow)
             previousWindow = NULL;
@@ -1127,6 +1372,46 @@ static DWORD WINAPI AcceptedMissionScannerThread(void*)
     }
 
     return 0;
+}
+
+static BOOL EnsureMissionScannerThread(DWORD* errorCode)
+{
+    DWORD exitCode = 0;
+    LONG wasStopping = InterlockedCompareExchange(
+        &g_bStopMissionScanner, 0, 0);
+
+    if (g_hMissionScannerThread)
+    {
+        if (!GetExitCodeThread(g_hMissionScannerThread, &exitCode))
+        {
+            if (errorCode)
+                *errorCode = GetLastError();
+            return FALSE;
+        }
+        if (exitCode == STILL_ACTIVE)
+        {
+            if (wasStopping)
+                InterlockedExchange(&g_bStopMissionScanner, 0);
+            if (errorCode)
+                *errorCode = ERROR_SUCCESS;
+            return TRUE;
+        }
+        CloseHandle(g_hMissionScannerThread);
+        g_hMissionScannerThread = NULL;
+    }
+
+    InterlockedExchange(&g_bStopMissionScanner, 0);
+    g_hMissionScannerThread = CreateThread(NULL, 0,
+        AcceptedMissionScannerThread, NULL, 0, NULL);
+    if (!g_hMissionScannerThread)
+    {
+        if (errorCode)
+            *errorCode = GetLastError();
+        return FALSE;
+    }
+    if (errorCode)
+        *errorCode = ERROR_SUCCESS;
+    return TRUE;
 }
 
 Message_t* DataBlockToMessageHook( int _Size, void* _pDataBlock )
@@ -1225,8 +1510,7 @@ int ProcessAttach( HINSTANCE _hModule )
     InterlockedExchange(&g_bStopMissionScanner, 0);
     g_hAICommandThread = CreateThread(NULL, 0,
         AICommandWindowThread, NULL, 0, NULL);
-    g_hMissionScannerThread = CreateThread(NULL, 0,
-        AcceptedMissionScannerThread, NULL, 0, NULL);
+    EnsureMissionScannerThread(NULL);
     return TRUE;
 }
 
@@ -1234,6 +1518,7 @@ int ProcessAttach( HINSTANCE _hModule )
 int ProcessDetach( HINSTANCE _hModule )
 {
     InterlockedExchange(&g_AIMissionState, AI_STATE_STOPPED);
+    InterlockedExchange(&g_AI2Monitoring, 0);
     InterlockedExchange(&g_bStopMissionScanner, 1);
     if (g_hMissionScannerThread)
     {

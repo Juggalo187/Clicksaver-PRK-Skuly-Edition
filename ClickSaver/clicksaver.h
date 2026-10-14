@@ -222,7 +222,18 @@ enum
     CS_AI_STATUS,
     CS_AI_CLIENTS_LIST,
     CS_AI_CLIENT_SELECTOR,
-    CS_AI_CLIENT_REFRESH
+    CS_AI_CLIENT_REFRESH,
+    CS_AI_AUTO_BUTTONS,
+    CS_AI_MANUAL_GROUP,
+    CS_AI_MANUAL_BUTTON,
+    CS_AI2_TAB,
+    CS_AI2_BUTTON,
+    CS_AI2_STATUS,
+    CS_AI2_CLIENT_SELECTOR,
+    CS_AI2_CLIENTS_LIST,
+    CS_AI2_CLIENT_REFRESH,
+    CS_AI2_USE_LOCATIONS,
+    CS_AI2_USE_EXITS
 };
 
 enum
@@ -273,7 +284,10 @@ enum
     CSAM_AI_STOP,
     CSAM_AI_EVENT,
     CSAM_ITEM_NAME_CACHE_READY,
-    CSAM_AI_REFRESH_CLIENTS
+    CSAM_AI_REFRESH_CLIENTS,
+    CSAM_AI_NEXT,
+    CSAM_AI2_ACTION,
+    CSAM_AI2_REFRESH_CLIENTS
 };
 
 extern PULID g_ItemWatchList;
@@ -304,11 +318,18 @@ int HasCheckedAIExit(void);
 int CheckAIMissionLocationMatch(int zoneId, float x, float y,
     char* matchedLocation, int matchedLocationSize);
 int HasAIMissionLocationRules(void);
+typedef struct CSAIMissionLocationRules CSAIMissionLocationRules;
+CSAIMissionLocationRules* CaptureAIMissionLocationRules(void);
+void FreeAIMissionLocationRules(CSAIMissionLocationRules* rules);
+int CheckAIMissionLocationMatchWithRules(int zoneId, float x, float y,
+    const CSAIMissionLocationRules* rules, char* matchedLocation,
+    int matchedLocationSize);
 #ifdef __cplusplus
 extern "C" {
 #endif
 BOOL SendAIMissionCommand(DWORD command, DWORD difficulty, DWORD missionId,
     HWND clientWindow, DWORD clientProcessId);
+void SetAIMissionManualMode(BOOL manual);
 #ifdef __cplusplus
 }
 #endif

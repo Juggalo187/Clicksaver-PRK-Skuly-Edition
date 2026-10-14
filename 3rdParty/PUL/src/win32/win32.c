@@ -534,6 +534,27 @@ void puSendAppMessage( PUU32 _Message, PUU32 _Param )
 	}
 }
 
+PUU32 puTrySendAppMessage( PUU32 _Message, PUU32 _Param )
+{
+	int i;
+	HWND hWnd = NULL;
+
+	for( i = 0; i < PUL_MAX_WINDOWS; i++ )
+	{
+		if( g_WindowLookUpTable[i].hWnd )
+		{
+			hWnd = g_WindowLookUpTable[i].hWnd;
+			break;
+		}
+	}
+
+	if( !hWnd || !puPostAppMessage( _Message, _Param ) )
+		return FALSE;
+
+	PostMessage( hWnd, WM_APP, 0, 0 );
+	return TRUE;
+}
+
 void puRedrawWindowRect( PUU32 _Window, pusRect* _pRect )
 {
 	if( _pRect == NULL )
