@@ -1637,8 +1637,13 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List, PUU8** ppM
                 }
                 if (isContainerReward) {
                     int watchHasPrefix = 0;
+                    char lowerClean[256];
+                    size_t k;
+                    for (k = 0; cleanName[k] && k < sizeof(lowerClean)-1; k++)
+                        lowerClean[k] = (char)tolower((unsigned char)cleanName[k]);
+                    lowerClean[k] = '\0';
                     for (int i = 0; container_prefixes[i] != NULL; i++) {
-                        if (strstr(cleanName, container_prefixes[i])) {
+                        if (strstr(lowerClean, container_prefixes[i])) {
                             watchHasPrefix = 1;
                             break;
                         }
