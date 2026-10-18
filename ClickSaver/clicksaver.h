@@ -330,6 +330,8 @@ extern "C" {
 BOOL SendAIMissionCommand(DWORD command, DWORD difficulty, DWORD missionId,
     HWND clientWindow, DWORD clientProcessId);
 void SetAIMissionManualMode(BOOL manual);
+BOOL IsAOClientWindow(HWND window);
+HWND FindAOClientWindow(void);
 #ifdef __cplusplus
 }
 #endif

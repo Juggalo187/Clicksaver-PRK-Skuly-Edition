@@ -608,12 +608,10 @@ static BOOL CALLBACK FindAIMissionClientsProc(HWND window, LPARAM parameter)
 {
     CSAIMissionClientSearch* search =
         (CSAIMissionClientSearch*)parameter;
-    char className[64] = "";
     char title[192] = "";
     DWORD processId = 0;
 
-    GetClassNameA(window, className, sizeof(className));
-    if (strcmp(className, "Anarchy client") != 0)
+    if (!IsAOClientWindow(window))
         return TRUE;
 
     GetWindowThreadProcessId(window, &processId);
@@ -3436,7 +3434,7 @@ int main( int argc, char** argv )
         case CSAM_BUYINGAGENT_TIMER:
             if (!g_bPaused && g_BuyingAgentCount > 0)
             {
-                HWND AOWnd = FindWindow( "Anarchy client", NULL );
+                HWND AOWnd = FindAOClientWindow();
                 if (AOWnd)
                 {
                     SetForegroundWindow( AOWnd );
@@ -3590,7 +3588,7 @@ int main( int argc, char** argv )
 		
 					WriteLog( NULL );
 		
-					if( !( AOWnd = FindWindow( "Anarchy client", NULL ) ) )
+					if( !( AOWnd = FindAOClientWindow() ) )
 					{
 						DisplayErrorMessage( "Anarchy Online is not running.", TRUE );
 						g_BuyingAgentCount = 0;
@@ -4718,7 +4716,7 @@ int BuyingAgent( int delay )
 {
     HWND AOWnd, BAWnd;
 
-    if( !( AOWnd = FindWindow( "Anarchy client", NULL ) ) )
+    if( !( AOWnd = FindAOClientWindow() ) )
     {
         DisplayErrorMessage( "Anarchy Online is not running.", TRUE );
         g_BuyingAgentCount = 0;
@@ -5297,10 +5295,7 @@ static void PruneAcceptedMissionClients(void)
 {
     for (size_t i = 0; i < g_AcceptedMissionClientCount;) {
         HWND window = g_AcceptedMissionClients[i].window;
-        char className[64] = "";
-        if (IsWindow(window))
-            GetClassNameA(window, className, sizeof(className));
-        if (IsWindow(window) && strcmp(className, "Anarchy client") == 0) {
+        if (IsAOClientWindow(window)) {
             i++;
             continue;
         }
@@ -5324,8 +5319,7 @@ BOOL ReceiveAcceptedMissionSnapshot(const void* data, PUU32 size, HWND sourceWin
     if (!bytes || !sourceWindow || !IsWindow(sourceWindow) ||
         size < 2 * sizeof(PUU32))
         return FALSE;
-    GetClassNameA(sourceWindow, className, sizeof(className));
-    if (strcmp(className, "Anarchy client") != 0)
+    if (!IsAOClientWindow(sourceWindow))
         return FALSE;
     GetWindowTextA(sourceWindow, characterName, sizeof(characterName));
 
@@ -5463,8 +5457,7 @@ static BOOL CALLBACK FindAcceptedMissionWindowProc(HWND window, LPARAM parameter
     size_t nameLength = strlen(search->characterName);
     size_t titleLength;
 
-    GetClassNameA(window, className, sizeof(className));
-    if (strcmp(className, "Anarchy client") != 0)
+    if (!IsAOClientWindow(window))
         return TRUE;
     GetWindowTextA(window, title, sizeof(title));
     titleLength = strlen(title);
@@ -6200,7 +6193,7 @@ static void _dragMouse( int x0, int y0, int x1, int y1 )
     LPARAM lParam;
     HWND AOWnd;
 
-    if( !( AOWnd = FindWindow( "Anarchy client", NULL ) ) )
+    if( !( AOWnd = FindAOClientWindow() ) )
     {
         DisplayErrorMessage( "Anarchy Online is not running.", TRUE );
         g_BuyingAgentCount = 0;

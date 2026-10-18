@@ -34,6 +34,55 @@ extern "C" char g_CurrentPacket[ 65536 ];
 extern "C" HANDLE g_hThreadExitEvent;
 extern "C" volatile LONG g_bPreserveAOHookForAIMonitor;
 
+// Matches by window class, or by anarchy.exe + title for Wine/Proton setups where the class may differ.
+extern "C" BOOL IsAOClientWindow(HWND window)
+{
+    char className[64] = "";
+    char title[64] = "";
+    DWORD processId = 0;
+
+    if (!window || !IsWindow(window))
+        return FALSE;
+    if (GetClassNameA(window, className, sizeof(className)) &&
+        strcmp(className, "Anarchy client") == 0)
+        return TRUE;
+
+    if (!GetWindowTextA(window, title, sizeof(title)) ||
+        _strnicmp(title, "Anarchy Online", 14) != 0)
+        return FALSE;
+    GetWindowThreadProcessId(window, &processId);
+    if (!processId)
+        return FALSE;
+
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+    if (!process)
+        return FALSE;
+    char path[MAX_PATH] = "";
+    DWORD size = sizeof(path);
+    BOOL ok = QueryFullProcessImageNameA(process, 0, path, &size);
+    CloseHandle(process);
+    if (!ok)
+        return FALSE;
+    const char* name = strrchr(path, '\\');
+    const char* slash = strrchr(path, '/');
+    if (slash > name)
+        name = slash;
+    name = name ? name + 1 : path;
+    return _stricmp(name, "anarchy.exe") == 0;
+}
+
+extern "C" HWND FindAOClientWindow(void)
+{
+    HWND result = NULL;
+    EnumWindows([](HWND window, LPARAM parameter) -> BOOL {
+        if (!IsAOClientWindow(window))
+            return TRUE;
+        *reinterpret_cast<HWND*>(parameter) = window;
+        return FALSE;
+    }, reinterpret_cast<LPARAM>(&result));
+    return result;
+}
+
 static HWND FindAOCommandWindow(DWORD processId)
 {
     struct SearchContext {
@@ -68,11 +117,8 @@ extern "C" void SetAIMissionManualMode(BOOL manual)
 extern "C" BOOL SendAIMissionCommand(DWORD command, DWORD difficulty,
     DWORD missionId, HWND clientWindow, DWORD clientProcessId)
 {
-    char className[64] = "";
     DWORD windowProcessId = 0;
-    if (!clientWindow || !clientProcessId || !IsWindow(clientWindow) ||
-        !GetClassNameA(clientWindow, className, sizeof(className)) ||
-        strcmp(className, "Anarchy client") != 0)
+    if (!clientWindow || !clientProcessId || !IsAOClientWindow(clientWindow))
         return FALSE;
     GetWindowThreadProcessId(clientWindow, &windowProcessId);
     if (windowProcessId != clientProcessId)
@@ -282,10 +328,8 @@ void Inject()
     snprintf(context.dllPath, sizeof(context.dllPath), "%s\\AOHook.dll", g_CSDir);
 
     EnumWindows([](HWND window, LPARAM parameter) -> BOOL {
-        char className[64] = "";
         DWORD processId = 0;
-        GetClassNameA(window, className, sizeof(className));
-        if (strcmp(className, "Anarchy client") != 0)
+        if (!IsAOClientWindow(window))
             return TRUE;
 
         GetWindowThreadProcessId(window, &processId);
@@ -395,7 +439,7 @@ extern "C" DWORD WINAPI HookManagerThread( void* _pParam )
             if (!InterlockedCompareExchange(
                 &g_bPreserveAOHookForAIMonitor, 0, 0))
             {
-                HWND AOWnd = FindWindow( "Anarchy client", NULL );
+                HWND AOWnd = FindAOClientWindow();
                 if (AOWnd)
                 {
                     DWORD pid = 0;
