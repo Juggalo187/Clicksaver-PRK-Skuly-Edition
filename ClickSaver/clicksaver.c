@@ -2386,6 +2386,11 @@ LRESULT CALLBACK MainWndProcHook( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
                 ReconnectAI2MissionMonitor();
             }
             previousTab = currentTab;
+
+            // Wine window managers can drop TOPMOST when the game takes focus; reassert it.
+            if (!g_bFullscreen && IsWindowVisible(hWnd))
+                SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
     }
     return DefSubclassProc( hWnd, uMsg, wParam, lParam );

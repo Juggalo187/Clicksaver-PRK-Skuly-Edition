@@ -77,14 +77,14 @@ PUU32 puCreateWindow( PULID _WindowObj, PUU32 _Parent, char* pTitle, pusRect* _p
 		return 0;
 
 	hWnd = CreateWindowEx( 
-		_Parent ? 0 : ( _bPopup ? WS_EX_TOOLWINDOW : WS_EX_APPWINDOW ),
+		_bPopup ? WS_EX_TOOLWINDOW : ( _Parent ? 0 : WS_EX_APPWINDOW ),
 		_bPopup ? "PUL_popup" : "PUL",
 		pTitle,
 	//	WS_CHILD,
-		_Parent ? ( WS_CHILD | WS_VISIBLE  ) : ( ( _bNoClose ? 0 : WS_SYSMENU ) |
-		( _bIconify ? WS_MINIMIZEBOX : 0) |
-		( _bPopup ? WS_POPUP : 0 ) |
-		WS_SIZEBOX ),
+		_bPopup ? ( WS_POPUP | WS_SIZEBOX ) :
+		( _Parent ? ( WS_CHILD | WS_VISIBLE ) :
+		( ( _bNoClose ? 0 : WS_SYSMENU ) |
+		( _bIconify ? WS_MINIMIZEBOX : 0 ) | WS_SIZEBOX ) ),
 		
 	//	0, 0, 50, 50,
 	//	1105, 446,
@@ -242,8 +242,16 @@ LRESULT CALLBACK puPopupWndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 	//	case WM_ERASEBKGND:
 			return 0;
 
+		case WM_NCDESTROY:
+			RemoveProp( hWnd, "PULPopupActivated" );
+			return puWndProc( hWnd, msg, wParam, lParam );
+
 		case WM_NCACTIVATE:
-			if( !wParam )
+			// A WM-managed Wine window may send a deactivate before the popup was ever activated; closing then makes it vanish instantly.
+			if( wParam )
+				SetProp( hWnd, "PULPopupActivated", ( HANDLE )1 );
+
+			if( !wParam && GetProp( hWnd, "PULPopupActivated" ) )
 			{
 				for( i = 0; i < PUL_MAX_WINDOWS; i++ )
 				{
@@ -608,7 +616,7 @@ void puShowWindow( PUU32 _Window )
 	RECT Rect;
 	GetWindowRect( ( HWND )_Window, &Rect );
 
-	if( GetParent( ( HWND )_Window ) )
+	if( GetWindowLong( ( HWND )_Window, GWL_STYLE ) & WS_CHILD )
 		MoveWindow( ( HWND )_Window, 0, 0, Rect.right - Rect.left, Rect.bottom - Rect.top, TRUE );
 	else
 		MoveWindow( ( HWND )_Window, Rect.left, Rect.top, Rect.right - Rect.left, Rect.bottom - Rect.top, TRUE );

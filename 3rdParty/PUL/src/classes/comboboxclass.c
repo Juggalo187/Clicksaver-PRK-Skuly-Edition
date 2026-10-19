@@ -200,6 +200,8 @@ PUU32 puComboBoxClassHandler( PULID _Object, PULID _Class, void* _pData, PUU32 _
 					if( pData->Selected >= 0 )
 						puSetAttribute( pData->Listview, PUA_LISTVIEW_SELECTED, pData->Selected );
 
+					puSetAttribute( pData->PopupWindow, PUA_WINDOW_PARENTHANDLE,
+						puGetAttribute( Window, PUA_WINDOW_HANDLE ) );
 					puSetAttribute( pData->PopupWindow, PUA_WINDOW_XPOS, WndRect.X + Rect.X );
 					puSetAttribute( pData->PopupWindow, PUA_WINDOW_YPOS, WndRect.Y + Rect.Y + Rect.Height - 1 );
 					puSetAttribute( pData->PopupWindow, PUA_WINDOW_WIDTH, Rect.Width );

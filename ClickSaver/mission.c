@@ -294,7 +294,7 @@ int ShouldSkipItemName(const char *name) {
     return 0;
 }
 
-static void NormalizeString(const char* src, char* dst, size_t dstSize) {
+static void NormalizeAsciiString(const char* src, char* dst, size_t dstSize) {
     size_t i = 0;
     while (*src && i < dstSize - 1) {
         char c = *src++;
@@ -465,7 +465,7 @@ static void GetNormalizedFirstWord(const char *fullName, char* normalized,
 		  while (*p && *p != ' ' && length < sizeof(firstWord) - 1)
 		      firstWord[length++] = *p++;
 		  firstWord[length] = '\0';
-		  NormalizeString(firstWord, normalized, normalizedSize);
+          NormalizeAsciiString(firstWord, normalized, normalizedSize);
 }
 
 static size_t HashFirstWord(const char *word)
@@ -2887,7 +2887,7 @@ static int FindItemInDescriptionFromCache(const PUU8* desc, unsigned long descLe
 
     char* normDesc = malloc(descLen + 1);
     if (!normDesc) return 0;
-    NormalizeString((const char*)desc, normDesc, descLen + 1);
+    NormalizeAsciiString((const char*)desc, normDesc, descLen + 1);
 
     char* words[1024];
     int wordCount = 0;
@@ -2908,7 +2908,7 @@ static int FindItemInDescriptionFromCache(const PUU8* desc, unsigned long descLe
             for (int k = 0; k < g_itemIndex[j].count; k++) {
                 const char* item = g_itemIndex[j].items[k];
                 char normItem[512];
-                NormalizeString(item, normItem, sizeof(normItem));
+                NormalizeAsciiString(item, normItem, sizeof(normItem));
                 if (strstr(normDesc, normItem) != NULL) {
                     int len = strlen(item);
                     if (len > bestLen) {
