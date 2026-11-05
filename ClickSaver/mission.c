@@ -1641,9 +1641,16 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List, PUU8** ppM
                 if (isContainerReward) {
                     int watchHasPrefix = 0;
                     for (int i = 0; container_prefixes[i] != NULL; i++) {
-                        if (FindSubstringCI((const PUU8*)cleanName,
-                                            (unsigned long)strlen(cleanName),
-                                            container_prefixes[i]) >= 0) {
+                        int hasPrefix = FindSubstringCI((const PUU8*)cleanName,
+                                                        (unsigned long)strlen(cleanName),
+                                                        container_prefixes[i]) >= 0;
+                        if (!hasPrefix &&
+                            strcmp(container_prefixes[i], "boosted-graft") == 0) {
+                            hasPrefix = FindSubstringCI((const PUU8*)cleanName,
+                                                        (unsigned long)strlen(cleanName),
+                                                        "boosted graft") >= 0;
+                        }
+                        if (hasPrefix) {
                             watchHasPrefix = 1;
                             break;
                         }
