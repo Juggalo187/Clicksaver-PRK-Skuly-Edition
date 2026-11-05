@@ -30,6 +30,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 static int BuildItemIndex(void);
 static int FindItemInDescriptionFromCache(const PUU8* desc, unsigned long descLen, PUU8* outName);
+static long FindSubstringCI(const PUU8* haystack, unsigned long haystackLen, const char* needle);
 
 static char **g_itemNames = NULL;
 static size_t g_numItemNames = 0;
@@ -1630,20 +1631,19 @@ PUU32 SetAndSearch( PUU8* _pSrcString, PULID _TextEntry, PULID _List, PUU8** ppM
                                                    
                 int isContainerReward = 0;
                 for (int i = 0; container_prefixes[i] != NULL; i++) {
-                    if (strstr((char*)TmpItemName, container_prefixes[i])) {
+                    if (FindSubstringCI((const PUU8*)TmpItemName,
+                                         (unsigned long)strlen((const char*)TmpItemName),
+                                         container_prefixes[i]) >= 0) {
                         isContainerReward = 1;
                         break;
                     }
                 }
                 if (isContainerReward) {
                     int watchHasPrefix = 0;
-                    char lowerClean[256];
-                    size_t k;
-                    for (k = 0; cleanName[k] && k < sizeof(lowerClean)-1; k++)
-                        lowerClean[k] = (char)tolower((unsigned char)cleanName[k]);
-                    lowerClean[k] = '\0';
                     for (int i = 0; container_prefixes[i] != NULL; i++) {
-                        if (strstr(lowerClean, container_prefixes[i])) {
+                        if (FindSubstringCI((const PUU8*)cleanName,
+                                            (unsigned long)strlen(cleanName),
+                                            container_prefixes[i]) >= 0) {
                             watchHasPrefix = 1;
                             break;
                         }
@@ -2873,9 +2873,9 @@ static long FindSubstringCI(const PUU8* haystack, unsigned long haystackLen, con
     for (unsigned long i = 0; i <= haystackLen - needleLen; i++) {
         unsigned long j;
         for (j = 0; j < needleLen; j++) {
-            char h = (char)haystack[i + j];
-            char n = needle[j];
-            if (tolower(h) != tolower(n)) break;
+            int h = tolower((unsigned char)haystack[i + j]);
+            int n = tolower((unsigned char)needle[j]);
+            if (h != n) break;
         }
         if (j == needleLen) return (long)i;
     }
